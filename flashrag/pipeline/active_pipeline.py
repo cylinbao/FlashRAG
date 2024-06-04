@@ -25,7 +25,8 @@ class IterativePipeline(BasicPipeline):
             else:
                 assert len(questions) == len(past_generation_result)
                 input_query = [f"{q} {r}" for q,r in zip(questions, past_generation_result)]
-
+            
+            dataset.update_output(f'retrieval_query_iter_{iter_idx}', input_query)
             # generation-augmented retrieval
             retrieval_results = self.retriever.batch_search(input_query)
             dataset.update_output(f'retrieval_result_iter_{iter_idx}', retrieval_results)
@@ -658,7 +659,7 @@ class FLAREPipeline(BasicPipeline):
 
             if not judge_result:
                 # do retrieval-augmented generation
-                retrieval_result = self.retriever.search(query)
+                retrieval_result = self.retriever.search(query)[0]
                 item.update_output('retrieval_result', retrieval_result)
                 input_prompt = self.prompt_template.get_string(
                     question=question, retrieval_result=retrieval_result, previous_gen=final_gen_result)
@@ -672,6 +673,7 @@ class FLAREPipeline(BasicPipeline):
                 output, scores = output[0], scores[0]
                 next_sent, _ = self.get_next_sentence(output, scores)
                 item.update_output(f'gen_iter_{iter_round}', next_sent)
+                item.update_output('retrieval_query', query)
                 item.update_output('retrieval_result', retrieval_result)
 
             final_gen_result += next_sent

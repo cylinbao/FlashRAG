@@ -11,14 +11,17 @@ args = parser.parse_args()
 
 config_dict = {
                 'data_dir': 'dataset/',
-                'index_path': 'indexes/e5_flat_sample.index',
-                'corpus_path': 'indexes/sample_data.jsonl',
+                # 'index_path': 'indexes/e5_flat_sample.index',
+                'index_path': '/data/wiki_dpr/contriever-msmarco/index/IVF4096,PQ64IP.index',
+                # 'corpus_path': 'indexes/sample_data.jsonl',
+                'corpus_path': '../../corpus/wiki_dpr_corpus.jsonl',
                 'model2path': {'e5': args.retriever_path, 'llama2-7B-chat': args.model_path},
                 'generator_model': 'llama2-7B-chat',
                 'retrieval_method': 'e5',
                 'metrics': ['em','f1','sub_em'],
                 'retrieval_topk': 1,
-                'save_intermediate_data': True
+                'save_intermediate_data': True,
+                'gpu_id': 3
             }
 
 config = Config(config_dict = config_dict)
@@ -37,3 +40,5 @@ pipeline = SequentialPipeline(config, prompt_template=prompt_templete)
 output_dataset = pipeline.run(test_data,do_eval=True)
 print("---generation output---")
 print(output_dataset.pred)
+
+breakpoint()

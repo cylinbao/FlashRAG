@@ -3,27 +3,37 @@ from flashrag.utils import get_dataset
 import argparse
 
 def naive(args):
-    save_note = 'naive'
-    config_dict = {'save_note': save_note,
-                'gpu_id':args.gpu_id,
-                'dataset_name':args.dataset_name}
+    # save_note = 'naive'
+    save_note = f'naive_batch_{args.batch_size}_topk_{args.retrieval_topk}_nprobe_{args.retrieval_nprobe}'
+    config_dict = {
+        'save_note': save_note,
+        'gpu_id':args.gpu_id,
+        'dataset_name':args.dataset_name,
+        'retrieval_batch_size': args.batch_size,
+        'retrieval_topk': args.retrieval_topk,
+        'retrieval_nprobe': args.retrieval_nprobe,
+    }
 
     from flashrag.pipeline import SequentialPipeline
     # preparation
-    config = Config('my_config.yaml',config_dict)
+    # config = Config('my_config.yaml',config_dict)
+    config = Config(args.config_file, config_dict)
     all_split = get_dataset(config)
     test_data = all_split[args.split]
 
     pred_process_fun = lambda x: x.split("\n")[0]
-    pipeline = SequentialPipeline(config)
-
-    result = pipeline.run(test_data)
+    pipeline = SequentialPipeline(config, verbose=True)
+    
+    result = pipeline.run(test_data, batch_size=-1)
 
 def zero_shot(args):
     save_note = 'zero-shot'
-    config_dict = {'save_note': save_note,
-                'gpu_id':args.gpu_id,
-                'dataset_name':args.dataset_name}
+    config_dict = {
+        'save_note': save_note,
+        'gpu_id':args.gpu_id,
+        'dataset_name':args.dataset_name,
+        'retrieval_nprobe':args.retrieval_nprobe,
+    }
 
     # preparation
     config = Config('my_config.yaml',config_dict)
@@ -63,14 +73,14 @@ def aar(args):
                     "AAR-ANCE": "cls"}
     save_note = retrieval_method
     config_dict = {
-                'retrieval_method': retrieval_method,
-                'model2path': model2path,
-                'index_path': index_path,
-                'model2pooling': model2pooling,
-                'save_note': save_note,
-                'gpu_id':args.gpu_id,
-                'dataset_name':args.dataset_name
-                }
+        'retrieval_method': retrieval_method,
+        'model2path': model2path,
+        'index_path': index_path,
+        'model2pooling': model2pooling,
+        'save_note': save_note,
+        'gpu_id':args.gpu_id,
+        'dataset_name':args.dataset_name
+    }
 
     # preparation
     config = Config('my_config.yaml',config_dict)
@@ -363,12 +373,15 @@ def flare(args):
         Official repo: https://github.com/bbuing9/ICLR24_SuRe
 
     """
-    config_dict={'save_note':'flare', 'gpu_id':args.gpu_id,
-                'dataset_name':args.dataset_name}
+    config_dict={
+        'save_note':'flare', 
+        'gpu_id':args.gpu_id,
+        'dataset_name':args.dataset_name,
+        'retrieval_nprobe':args.retrieval_nprobe,
+    }
     config = Config('my_config.yaml',config_dict)
     all_split = get_dataset(config)
     test_data = all_split[args.split]
-
 
     from flashrag.pipeline import FLAREPipeline
     pipeline = FLAREPipeline(config)
@@ -385,9 +398,12 @@ def iterretgen(args):
         in EMNLP Findings 2023. 
     """
     iter_num = 3
-    config_dict = {'save_note': 'iter-retgen',
-                'gpu_id':args.gpu_id,
-                'dataset_name':args.dataset_name}
+    config_dict = {
+        'save_note': 'iter-retgen',
+        'gpu_id':args.gpu_id,
+        'dataset_name':args.dataset_name,
+        'retrieval_nprobe':args.retrieval_nprobe,
+    }
     # preparation
     config = Config('my_config.yaml', config_dict)
     all_split = get_dataset(config)
@@ -399,10 +415,14 @@ def iterretgen(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description = "Running exp")
+    parser.add_argument('--config_file', type=str)
     parser.add_argument('--method_name', type=str)
     parser.add_argument('--split', type=str)
     parser.add_argument('--dataset_name',type=str)
     parser.add_argument('--gpu_id', type=str)
+    parser.add_argument('--batch_size', type=int, default=-1)
+    parser.add_argument('--retrieval_topk', type=int)
+    parser.add_argument('--retrieval_nprobe', type=int)
 
     func_dict = {
         'AAR-contriever': aar,

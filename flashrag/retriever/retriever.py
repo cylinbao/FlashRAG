@@ -5,6 +5,9 @@ from typing import List, Dict
 import functools
 from tqdm import tqdm
 import faiss
+import numpy as np
+import time
+# from pyserini.search.lucene import LuceneSearcher
 
 from flashrag.utils import get_reranker
 from flashrag.retriever.utils import load_corpus, load_docs
@@ -228,11 +231,17 @@ class DenseRetriever(BaseRetriever):
     def __init__(self, config: dict):
         super().__init__(config)
         self.index = faiss.read_index(self.index_path)
+        self.nprobe = config['retrieval_nprobe']
         if config['faiss_gpu']:
+            # gpu_id = int(config['faiss_gpu_id'])
+            # gpu_id = 0
+            # os.environ["CUDA_VISIBLE_DEVICES"] = f"{gpu_id}"
             co = faiss.GpuMultipleClonerOptions()
             co.useFloat16 = True
             co.shard = True
             self.index = faiss.index_cpu_to_all_gpus(self.index, co=co)
+            # self.index = faiss.index_cpu_to_gpu(res, 0, self.index)
+        faiss.downcast_index(self.index).nprobe = self.nprobe
 
         self.corpus = load_corpus(self.corpus_path)
         self.encoder = Encoder(
@@ -244,14 +253,21 @@ class DenseRetriever(BaseRetriever):
             )
         self.topk = config['retrieval_topk']
         self.batch_size = self.config['retrieval_batch_size']
+        self.retrieval_t = []
 
-    def _search(self, query: str, num: int = None, return_score = False):
+    def _search(self, query: str, num: int = None, return_score = False, nprobe: int = None):
         if num is None:
             num = self.topk
         query_emb = self.encoder.encode(query)
+
+        if nprobe != None:
+            faiss.downcast_index(self.index).nprobe = nprobe
+
         scores, idxs = self.index.search(query_emb, k=num)
         idxs = idxs[0]
         scores = scores[0]
+        idxs = idxs.tolist()
+        scores = scores.tolist()
 
         results = load_docs(self.corpus, idxs)
         if return_score:
@@ -259,21 +275,27 @@ class DenseRetriever(BaseRetriever):
         else:
             return results
 
-    def _batch_search(self, query_list: List[str], num: int = None, return_score = False):
+    def _batch_search(self, query_list: List[str], num: int = None, return_score = False, nprobe: int = None):
         if isinstance(query_list, str):
             query_list = [query_list]
         if num is None:
             num = self.topk
 
+        if nprobe != None:
+            faiss.downcast_index(self.index).nprobe = nprobe
+        
         batch_size = self.batch_size
 
         results = []
         scores = []
-
+        elap_t = []
         for start_idx in tqdm(range(0, len(query_list), batch_size), desc='Retrieval process: '):
             query_batch = query_list[start_idx:start_idx + batch_size]
+            clock_0 = time.time()
             batch_emb = self.encoder.encode(query_batch)
+            clock_1 = time.time()
             batch_scores, batch_idxs = self.index.search(batch_emb, k=num)
+            clock_2 = time.time()
             batch_scores = batch_scores.tolist()
             batch_idxs = batch_idxs.tolist()
 
@@ -283,7 +305,15 @@ class DenseRetriever(BaseRetriever):
 
             scores.extend(batch_scores)
             results.extend(batch_results)
+            elap_t.append([clock_1 - clock_0, clock_2 - clock_1])
 
+        elap_t = np.array(elap_t)
+        # discard the first three runs
+        if elap_t.shape[0] > 3:
+            elap_t = elap_t[3:,:]
+        elap_t = np.mean(elap_t, axis=0)
+        self.retrieval_t.append({'emb': elap_t[0], 'retrieve': elap_t[1]})
+        
         if return_score:
             return results, scores
         else:

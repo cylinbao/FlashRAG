@@ -97,9 +97,13 @@ class PromptTemplate:
         format_reference = ''
         for idx, doc_item in enumerate(retrieval_result):
             content = doc_item['contents']
-            title = content.split("\n")[0]
-            text = "\n".join(content.split("\n")[1:])
-            format_reference += f"Doc {idx+1}(Title: {title}) {text}\n"
+            if "title" in doc_item.keys():
+                title = doc_item['title']
+                text = content
+            else:
+                title = content.split("\n")[0]
+                text = "\n".join(content.split("\n")[1:])
+            format_reference += f"Doc {idx+1} (Title: {title}) {text}\n"
 
         return format_reference
 

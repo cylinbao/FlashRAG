@@ -2,6 +2,8 @@ from typing import List
 from copy import deepcopy
 from tqdm import tqdm
 import numpy as np
+import time
+import os
 import torch
 from transformers import AutoTokenizer, \
                         AutoModelForCausalLM, \
@@ -20,6 +22,8 @@ class BaseGenerator:
         self.max_input_len = config['generator_max_input_len']
         self.batch_size = config['generator_batch_size']
         self.device = config['device']
+        self.gpu_num = torch.cuda.device_count()
+        # self.gpu_ids = config['generator_gpu_id']
         self.gpu_num = torch.cuda.device_count()
 
         self.generation_params = config['generation_params']
@@ -159,7 +163,8 @@ class VLLMGenerator(BaseGenerator):
                     )
 
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_path)
-
+        self.gen_t = []
+            
     @torch.no_grad()
     def generate(self, input_list: List[str], return_raw_output=False, return_scores=False, **params):
         from vllm import SamplingParams
@@ -196,10 +201,12 @@ class VLLMGenerator(BaseGenerator):
                 lora_request=LoRARequest('lora_module', 1, self.lora_path)
             )
         else:
+            clock = time.time()
             outputs = self.model.generate(
                 input_list,
                 sampling_params
             )
+            self.gen_t.append(time.time()-clock)
 
         if return_raw_output:
             base_output =  outputs
