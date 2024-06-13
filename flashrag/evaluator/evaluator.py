@@ -51,8 +51,8 @@ class Evaluator:
                 metric_result, metric_scores = self.metric_class[metric].calculate_metric(data)
                 result_dict.update(metric_result)
 
-                for metric_score, item in zip(metric_scores, data):
-                    item.update_evaluation_score(metric, metric_score)
+                # for metric_score, item in zip(metric_scores, data):
+                #     item.update_evaluation_score(metric, metric_score)
             except Exception as e:
                 print(f'Error in {metric}!')
                 print(e)
@@ -79,7 +79,10 @@ class Evaluator:
         """Save the evaluated data, including the raw data and the score of each data 
         sample on each metric."""
 
-        file_name = "intermediate_data.json"
-        save_path = os.path.join(self.save_dir, file_name)
+        # file_name = "intermediate_data.json"
+        # save_path = os.path.join(self.save_dir, file_name)
+
+        file_name = f"{self.config['generator_model']}_{self.config['dataset_name']}_{self.config['save_note']}.jsonl"
+        save_path = os.path.join(self.config["log_dir"], file_name)
 
         data.save(save_path)

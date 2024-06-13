@@ -4,8 +4,10 @@ import argparse
 
 def naive(args):
     # save_note = 'naive'
-    save_note = f'naive_batch_{args.batch_size}_topk_{args.retrieval_topk}_nprobe_{args.retrieval_nprobe}'
+    # save_note = f'naive_batch_{args.batch_size}_topk_{args.retrieval_topk}_nprobe_{args.retrieval_nprobe}'
+    save_note = f'topk_{args.retrieval_topk}_nprobe_{args.retrieval_nprobe}'
     config_dict = {
+        'method_name': "ric",
         'save_note': save_note,
         'gpu_id':args.gpu_id,
         'dataset_name':args.dataset_name,
@@ -22,7 +24,7 @@ def naive(args):
     test_data = all_split[args.split]
 
     pred_process_fun = lambda x: x.split("\n")[0]
-    pipeline = SequentialPipeline(config, verbose=True)
+    pipeline = SequentialPipeline(config, verbose=False)
     
     result = pipeline.run(test_data, batch_size=-1)
 
@@ -32,11 +34,14 @@ def zero_shot(args):
         'save_note': save_note,
         'gpu_id':args.gpu_id,
         'dataset_name':args.dataset_name,
-        'retrieval_nprobe':args.retrieval_nprobe,
+        'retrieval_batch_size': args.batch_size,
+        # 'retrieval_topk': args.retrieval_topk,
+        # 'retrieval_nprobe':args.retrieval_nprobe,
     }
 
     # preparation
-    config = Config('my_config.yaml',config_dict)
+    # config = Config('my_config.yaml',config_dict)
+    config = Config(args.config_file, config_dict)
     all_split = get_dataset(config)
     test_data = all_split[args.split]
 
@@ -48,7 +53,7 @@ def zero_shot(args):
         user_prompt = "Question: {question}"
     )
     pred_process_fun = lambda x: x.split("\n")[0]
-    pipeline = SequentialPipeline(config, templete)
+    pipeline = SequentialPipeline(config, templete, no_retrieval=True)
     result = pipeline.naive_run(test_data)
 
 def aar(args):
@@ -278,13 +283,20 @@ def replug(args):
     Reference:
         Weijia Shi et al. "REPLUG: Retrieval-Augmented Black-Box Language Models".
     """
-    save_note = 'replug'
-    config_dict = {'save_note': save_note,
-                'gpu_id':args.gpu_id,
-                'dataset_name':args.dataset_name}
+    save_note = f'topk_{args.retrieval_topk}_nprobe_{args.retrieval_nprobe}'
+    config_dict = {
+        'framework': 'hf' ,
+        'method_name': args.method_name,
+        'save_note': save_note,
+        'gpu_id':args.gpu_id,
+        'dataset_name':args.dataset_name,
+        'retrieval_batch_size': args.batch_size,
+        'retrieval_topk': args.retrieval_topk,
+        'retrieval_nprobe': args.retrieval_nprobe,
+    }
 
     # preparation
-    config = Config('my_config.yaml',config_dict)
+    config = Config('base_config.yaml', config_dict)
     all_split = get_dataset(config)
     test_data = all_split[args.split]
     pred_process_fun = lambda x: x.split("\n")[0]
@@ -398,14 +410,20 @@ def iterretgen(args):
         in EMNLP Findings 2023. 
     """
     iter_num = 3
+
+    save_note = f'topk_{args.retrieval_topk}_nprobe_{args.retrieval_nprobe}'
     config_dict = {
-        'save_note': 'iter-retgen',
+        'method_name': args.method_name,
+        'save_note': save_note,
         'gpu_id':args.gpu_id,
         'dataset_name':args.dataset_name,
-        'retrieval_nprobe':args.retrieval_nprobe,
+        'retrieval_batch_size': args.batch_size,
+        'retrieval_topk': args.retrieval_topk,
+        'retrieval_nprobe': args.retrieval_nprobe,
     }
+
     # preparation
-    config = Config('my_config.yaml', config_dict)
+    config = Config('base_config.yaml', config_dict)
     all_split = get_dataset(config)
     test_data = all_split[args.split]
 

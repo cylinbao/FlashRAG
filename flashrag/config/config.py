@@ -178,7 +178,10 @@ class Config:
         current_time = datetime.datetime.now()
         self.final_config['save_dir'] = os.path.join(self.final_config['save_dir'],
                                      f"{self.final_config['dataset_name']}_{current_time.strftime('%Y_%m_%d_%H_%M')}_{save_note}")
+        self.final_config['log_dir'] = os.path.join(self.final_config['log_dir'], self.final_config["method_name"])
+                                     # f"{self.final_config['generator_moder']}_{self.final_config['dataset_name']}_{save_note}.jsonl")
         os.makedirs(self.final_config['save_dir'], exist_ok=True)
+        os.makedirs(self.final_config['log_dir'], exist_ok=True)
         # save config parameters
         config_save_path = os.path.join(self.final_config['save_dir'],'config.yaml')
         with open(config_save_path, 'w') as f:

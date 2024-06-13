@@ -27,15 +27,18 @@ method2index:
 # ------------------------------------------------Environment Settings------------------------------------------------#
 # Directory paths for data and outputs
 data_dir: "/home/cyulin/rag/FlashRAG/data"
-save_dir: "e5_flat_sample2048/"
-# save_dir: "dev/"
+# save_dir: "e5_flat_sample2048/"
+# save_dir: "openai_nprobe/"
+save_dir: "dev/"
+log_dir: "/data/rag_data/rag_output/"
+# log_dir: "rag_output/"
 
 gpu_id: "1" # "0,1,2,3"
 dataset_name: "nq" # name of the dataset in data_dir
 split: ["train","dev","test"]  # dataset split to load (e.g. train,dev,test)
 
 # Sampling configurations for testing
-test_sample_num: 2048 # number of samples to test (only work in dev/test split), if None, test all samples
+test_sample_num: 128 # number of samples to test (only work in dev/test split), if None, test all samples
 random_sample: True # whether to randomly sample the test samples
 
 # Seed for reproducibility
@@ -50,8 +53,8 @@ save_note: 'experiment'
 # retrieval_method: "e5" # name or path of the retrieval model. 
 retrieval_method: "contriever" # name or path of the retrieval model. 
 
-index_path: /data/wiki_dpr/contriever-msmarco/index/IVF4096,PQ64IP.index
-# index_path: /data/wiki_dpr/contriever-msmarco/index/IVF4096,FlatIP.index # set automatically if not provided. 
+# index_path: /data/wiki_dpr/contriever-msmarco/index/IVF4096,PQ64IP.index
+index_path: /data/wiki_dpr/contriever-msmarco/index/IVF4096,FlatIP.index # set automatically if not provided. 
 # index_path: /data/wiki_dpr/contriever-msmarco/index/FlatIP.index # set automatically if not provided. 
 # index_path: /home/cyulin/rag/FlashRAG/index/e5_Flat.index # set automatically if not provided. 
 
@@ -83,6 +86,7 @@ rerank_use_fp16: True
 framework: 'vllm' # inference frame work of LLM, supporting: 'hf','vllm','fschat'
 # generator_model: "llama2-7B-chat" # name or path of the generator model
 generator_model: "llama3-8B-instruct" # name or path of the generator model
+# generator_model: "gpt-3.5-turbo" # name or path of the generator model
 # generator_max_input_len: 1024  # max length of the input
 generator_max_input_len: 2048  # max length of the input
 generator_batch_size: 2 # batch size for generation, invalid for vllm
@@ -93,6 +97,10 @@ generation_params:
   top_p: 1.0
 use_fid: False # whether to use FID, only valid in encoder-decoder model
 vllm_gpu_memory_utilization: 0.5
+# config for openai api
+openai_setting:
+  api_key: 
+  base_url: ~
 
 
 # -------------------------------------------------Refiner Settings------------------------------------------------#

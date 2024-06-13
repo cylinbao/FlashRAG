@@ -56,25 +56,26 @@ class BasicPipeline:
 
     
 class SequentialPipeline(BasicPipeline):
-    def __init__(self, config, prompt_template = None, verbose=False):
+    def __init__(self, config, prompt_template = None, verbose=False, no_retrieval=False):
         """
         inference stage:
             query -> pre-retrieval -> retriever -> post-retrieval -> generator
         """
 
         super().__init__(config, prompt_template)
-        self.retriever = get_retriever(config)
+        if no_retrieval == False:
+            self.retriever = get_retriever(config)
         self.generator = get_generator(config)
         self.avg_gen_t = None
         self.avg_ret_t = None
         self.verbose = verbose
 
         # TODO: add rewriter module
-
         self.use_fid = config['use_fid']
         self.batch_size = config['retrieval_batch_size']
-        self.retrieval_topk = config['retrieval_topk']
-        self.retrieval_nprobe = config['retrieval_nprobe']
+        if no_retrieval == False:
+            self.retrieval_topk = config['retrieval_topk']
+            self.retrieval_nprobe = config['retrieval_nprobe']
 
         if config['refiner_name'] is not None:
             self.refiner = get_refiner(config)
@@ -96,6 +97,7 @@ class SequentialPipeline(BasicPipeline):
         input_query = dataset.question
 
         retrieval_results = self.retriever.batch_search(input_query)
+        dataset.update_output('retrieval_query', input_query)
         dataset.update_output('retrieval_result', retrieval_results)
 
         if self.refiner:
@@ -145,15 +147,17 @@ class SequentialPipeline(BasicPipeline):
         else:
             pred_answer_list = self.generator.generate(input_prompts)
 
-        gen_t = np.array(self.generator.gen_t)
-        # discard the first three runs for better measurement
-        if gen_t.shape[0] > 3:
-            gen_t = gen_t[3:]
-        self.avg_gen_t = np.mean(gen_t)
-
-        retrieval_t = self.retriever.retrieval_t[0]
-        self.avg_ret_t = retrieval_t["emb"] + retrieval_t["retrieve"]
         if self.verbose:
+            gen_t = np.array(self.generator.gen_t)
+            # discard the first three runs for better measurement
+            if gen_t.shape[0] > 3:
+                gen_t = gen_t[3:]
+            self.avg_gen_t = np.mean(gen_t)
+
+            retrieval_t = self.retriever.retrieval_t[0]
+            self.avg_ret_t = retrieval_t["emb"] + retrieval_t["retrieve"]
+
+        # if self.verbose:
             print(f"Averaged generation time (ms): {self.avg_gen_t*1000:.3f}")
             print(f"Averaged retrieval time (ms): {self.avg_ret_t*1000:.3f}")
             profile_dict = {

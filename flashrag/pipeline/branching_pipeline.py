@@ -17,6 +17,7 @@ class REPLUGPipeline(BasicPipeline):
         # load specify model for REPLUG
         model = load_replug_model(config['generator_model_path'])
         self.generator = get_generator(config, model=model)
+        # self.generator = get_generator(config)
 
     def build_single_doc_prompt(self, question: str, doc_list: List[str]):
         return [
@@ -41,9 +42,11 @@ class REPLUGPipeline(BasicPipeline):
         input_query = dataset.question
 
         retrieval_results, doc_scores = self.retriever.batch_search(input_query, return_score=True)
+        dataset.update_output('retrieval_query', input_query)
         dataset.update_output('retrieval_result', retrieval_results)
         dataset.update_output('doc_scores', doc_scores)
 
+        prompt_list = []
         pred_answer_list = []
         # each doc has a prompt
         for item in tqdm(dataset, desc='Inference: '):
@@ -57,9 +60,11 @@ class REPLUGPipeline(BasicPipeline):
                                 )
             # the output of the batch is same
             output = output[0]
+            prompt_list.append(prompts)
             pred_answer_list.append(output)
 
-        dataset.update_output("pred",pred_answer_list)
+        dataset.update_output("prompts", prompt_list)
+        dataset.update_output("pred", pred_answer_list)
 
         dataset = self.evaluate(dataset, do_eval=do_eval, pred_process_fun=pred_process_fun)
 
