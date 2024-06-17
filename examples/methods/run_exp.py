@@ -80,7 +80,8 @@ def hyde(args):
     result = pipeline.run(test_data, batch_size=-1)
 
 def LlamaIndexIter(args):
-    save_note = f'topk_{args.retrieval_topk}_nprobe_{args.retrieval_nprobe}'
+    pipe_version = args.pipeline_version # "v1"
+    save_note = f'topk_{args.retrieval_topk}_nprobe_{args.retrieval_nprobe}_{pipe_version}'
     config_dict = {
         'method_name': "llamaindex_inter",
         'save_note': save_note,
@@ -110,10 +111,9 @@ def LlamaIndexIter(args):
     #     )
     # )
     # pipeline = LlamaIndexIterativePipeline(config, prompt_template=prompt_template)
-    pipeline = LlamaIndexIterativePipeline(config, iter_num=3)
+    pipeline = LlamaIndexIterativePipeline(config, iter_num=3, pipeline_version=pipe_version)
     
     result = pipeline.run(test_data)
-    breakpoint()
 
 def aar(args):
     """
@@ -500,6 +500,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=-1)
     parser.add_argument('--retrieval_topk', type=int)
     parser.add_argument('--retrieval_nprobe', type=int)
+    parser.add_argument('--pipeline_version', type=str, default="v1")
 
     func_dict = {
         'AAR-contriever': aar,

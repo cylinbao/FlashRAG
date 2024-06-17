@@ -52,9 +52,10 @@ class IterativePipeline(BasicPipeline):
         return dataset
 
 class LlamaIndexIterativePipeline(BasicPipeline):
-    def __init__(self, config, prompt_template=None, iter_num = 3):
+    def __init__(self, config, prompt_template=None, iter_num=3, pipeline_version="v1"):
         super().__init__(config, prompt_template)
         self.iter_num = iter_num
+        self.pipeline_version = pipeline_version
         self.retriever = get_retriever(config)
         self.generator = get_generator(config)
 
@@ -71,6 +72,11 @@ class LlamaIndexIterativePipeline(BasicPipeline):
             system_prompt =  DEFAULT_JUDGE_TMPL
         )
 
+        self.run_func_dict = {
+            "v0": self.run_item_v0,
+            "v1": self.run_item_v1
+        }
+
     
     def step_decompose_query_transform(self, item, iter, query, retrieval_results, prev_gen=None):
         input_prompt = self.step_decompose_template.get_string(
@@ -83,27 +89,24 @@ class LlamaIndexIterativePipeline(BasicPipeline):
 
         return step_decompose_query
 
-    def run_item(self, item):
+    def run_item_v0(self, item):
         question = item.question
         retrieval_results = self.retriever.search(question)
-        # num_tasks = len(questions)
 
-        # run in batch
-        past_generation_results = [] # list of N items
-        finished_tasks = []
-        finished_retrieval_results = []
-        finished_generation_results = []
+        # past_generation_results = [] # list of N items
         for iter_idx in range(self.iter_num):
             if iter_idx == 0:
                 past_retrieval_results = retrieval_results
-                past_generation_results = None
+                past_generation_result = None
+            else:
+                past_generation_result = generation_result
             
             item.update_output(f'original_retrieval_query_iter_{iter_idx}', question)
             item.update_output(f'original_retrieval_results_iter_{iter_idx}', retrieval_results)
 
             step_decompose_retrieval_query = self.step_decompose_query_transform(
                 item, iter_idx, question, 
-                past_retrieval_results, past_generation_results
+                past_retrieval_results, past_generation_result
             )
             item.update_output(
                 f'step_decomposed_retrieval_query_iter_{iter_idx}', 
@@ -134,10 +137,59 @@ class LlamaIndexIterativePipeline(BasicPipeline):
 
         item.update_output('pred', generation_result[0])
         return
+
+    def run_item_v1(self, item):
+        question = item.question
+
+        for iter_idx in range(0, self.iter_num):
+            if iter_idx == 0:
+                retrieval_query = question
+                item.update_output(f'retrieval_query_iter_0', question)
+            else:
+                retrieval_query = self.step_decompose_query_transform(
+                    item, iter_idx, 
+                    question, 
+                    past_retrieval_results, 
+                    past_generation_result
+                )
+                item.update_output(
+                    f'step_decomposed_retrieval_query_iter_{iter_idx}', 
+                    retrieval_query[0]                    
+                )
+
+            retrieval_results = self.retriever.search(retrieval_query)
+            item.update_output(f'retrieval_results_iter_{iter_idx}', retrieval_results)
+
+            input_prompt = [self.prompt_template.get_string(
+                question=question, retrieval_result=retrieval_results
+            )]
+            item.update_output(f'llm_prompt_iter_{iter_idx}', input_prompt[0])
+
+            generation_result = self.generator.generate(input_prompt)
+            item.update_output(f'llm_response_iter_{iter_idx}', generation_result[0])
+
+            judge_prompt = [self.judge_prompt_template.get_string(
+                question=question, answer_str=generation_result
+            )]
+            item.update_output(f'judge_prompt_iter_{iter_idx}', judge_prompt[0])
+
+            judge_result = self.generator.generate(judge_prompt)[0]
+            item.update_output(f'judge_result_iter_{iter_idx}', judge_result)
+
+            past_retrieval_results = retrieval_results
+            past_generation_result = generation_result
+
+            if judge_result == "1":
+                break
+
+        item.update_output('pred', generation_result[0])
+        return
     
     def run(self, dataset, do_eval=True, pred_process_fun=None):
+        run_func = self.run_func_dict[self.pipeline_version]
+
         for item in tqdm(dataset, desc="Inference: "):
-            self.run_item(item)
+            run_func(item)
 
         dataset = self.evaluate(dataset, do_eval=do_eval, pred_process_fun=pred_process_fun)
         return dataset
