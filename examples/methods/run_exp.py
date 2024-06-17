@@ -56,6 +56,65 @@ def zero_shot(args):
     pipeline = SequentialPipeline(config, templete, no_retrieval=True)
     result = pipeline.naive_run(test_data)
 
+def hyde(args):
+    save_note = f'topk_{args.retrieval_topk}_nprobe_{args.retrieval_nprobe}'
+    config_dict = {
+        'method_name': "hyde",
+        'save_note': save_note,
+        'gpu_id':args.gpu_id,
+        'dataset_name':args.dataset_name,
+        'retrieval_batch_size': args.batch_size,
+        'retrieval_topk': args.retrieval_topk,
+        'retrieval_nprobe': args.retrieval_nprobe,
+    }
+
+    from flashrag.pipeline import HyDEPipeline
+    # preparation
+    config = Config(args.config_file, config_dict)
+    all_split = get_dataset(config)
+    test_data = all_split[args.split]
+
+    pred_process_fun = lambda x: x.split("\n")[0]
+    pipeline = HyDEPipeline(config)
+    
+    result = pipeline.run(test_data, batch_size=-1)
+
+def LlamaIndexIter(args):
+    save_note = f'topk_{args.retrieval_topk}_nprobe_{args.retrieval_nprobe}'
+    config_dict = {
+        'method_name': "llamaindex_inter",
+        'save_note': save_note,
+        'gpu_id':args.gpu_id,
+        'dataset_name':args.dataset_name,
+        'retrieval_batch_size': args.batch_size,
+        'retrieval_topk': args.retrieval_topk,
+        'retrieval_nprobe': args.retrieval_nprobe,
+    }
+
+    from flashrag.pipeline import LlamaIndexIterativePipeline
+    from flashrag.prompt import PromptTemplate, DEFAULT_TREE_SUMMARIZE_TMPL
+
+    # preparation
+    config = Config(args.config_file, config_dict)
+    all_split = get_dataset(config)
+    test_data = all_split[args.split]
+
+    pred_process_fun = lambda x: x.split("\n")[0]
+
+    # prompt_template = PromptTemplate(
+    #     config = config,
+    #     system_prompt =  DEFAULT_TREE_SUMMARIZE_TMPL,
+    #     user_prompt = (
+    #         "Query: {question}\n"
+    #         "Answer: "
+    #     )
+    # )
+    # pipeline = LlamaIndexIterativePipeline(config, prompt_template=prompt_template)
+    pipeline = LlamaIndexIterativePipeline(config, iter_num=3)
+    
+    result = pipeline.run(test_data)
+    breakpoint()
+
 def aar(args):
     """
     Reference:
@@ -456,7 +515,9 @@ if __name__ == '__main__':
         'skr': skr,
         'selfrag': selfrag,
         'flare': flare,
-        'iterretgen': iterretgen
+        'iterretgen': iterretgen,
+        'hyde': hyde,
+        'iter': LlamaIndexIter
     }
 
     args = parser.parse_args()

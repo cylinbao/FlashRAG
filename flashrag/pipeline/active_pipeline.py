@@ -1,11 +1,14 @@
 import re
 from tqdm import tqdm
 import numpy as np
+import itertools
 from transformers import AutoTokenizer, PreTrainedTokenizer, PreTrainedTokenizerFast
+from flashrag.dataset.utils import split_dataset, merge_dataset
 from flashrag.utils import get_retriever, get_generator
 from flashrag.pipeline import BasicPipeline
 from flashrag.dataset import get_batch_dataset, merge_batch_dataset
 from flashrag.prompt import PromptTemplate
+from flashrag.dataset import Dataset
 
 class IterativePipeline(BasicPipeline):
     def __init__(self, config, prompt_template=None, iter_num = 3):
@@ -46,6 +49,97 @@ class IterativePipeline(BasicPipeline):
         dataset.update_output("pred", past_generation_result)
         dataset = self.evaluate(dataset, do_eval=do_eval, pred_process_fun=pred_process_fun)
 
+        return dataset
+
+class LlamaIndexIterativePipeline(BasicPipeline):
+    def __init__(self, config, prompt_template=None, iter_num = 3):
+        super().__init__(config, prompt_template)
+        self.iter_num = iter_num
+        self.retriever = get_retriever(config)
+        self.generator = get_generator(config)
+
+        from flashrag.prompt import PromptTemplate
+        from flashrag.prompt import DEFAULT_STEP_DECOMPOSE_QUERY_TRANSFORM_TMPL, DEFAULT_JUDGE_TMPL
+
+        self.step_decompose_template = PromptTemplate(
+            config = config,
+            system_prompt =  DEFAULT_STEP_DECOMPOSE_QUERY_TRANSFORM_TMPL
+        )
+
+        self.judge_prompt_template = PromptTemplate(
+            config = config,
+            system_prompt =  DEFAULT_JUDGE_TMPL
+        )
+
+    
+    def step_decompose_query_transform(self, item, iter, query, retrieval_results, prev_gen=None):
+        input_prompt = self.step_decompose_template.get_string(
+            question=query, retrieval_result=retrieval_results, previous_gen=prev_gen
+        ) 
+        item.update_output(f'step_decompose_prompt_iter_{iter}', input_prompt[0])
+
+        step_decompose_query = self.generator.generate(input_prompt)
+        # item.update_output(f'step_decompose_gen_query_iter_{iter}', step_decompose_query)
+
+        return step_decompose_query
+
+    def run_item(self, item):
+        question = item.question
+        retrieval_results = self.retriever.search(question)
+        # num_tasks = len(questions)
+
+        # run in batch
+        past_generation_results = [] # list of N items
+        finished_tasks = []
+        finished_retrieval_results = []
+        finished_generation_results = []
+        for iter_idx in range(self.iter_num):
+            if iter_idx == 0:
+                past_retrieval_results = retrieval_results
+                past_generation_results = None
+            
+            item.update_output(f'original_retrieval_query_iter_{iter_idx}', question)
+            item.update_output(f'original_retrieval_results_iter_{iter_idx}', retrieval_results)
+
+            step_decompose_retrieval_query = self.step_decompose_query_transform(
+                item, iter_idx, question, 
+                past_retrieval_results, past_generation_results
+            )
+            item.update_output(
+                f'step_decomposed_retrieval_query_iter_{iter_idx}', 
+                step_decompose_retrieval_query[0]                    
+            )
+
+            retrieval_results = self.retriever.search(step_decompose_retrieval_query)
+            item.update_output(f'step_decomposed_retrieval_results_iter_{iter_idx}', retrieval_results)
+
+            input_prompt = [self.prompt_template.get_string(
+                question=question, retrieval_result=retrieval_results
+            )]
+            item.update_output(f'llm_prompt_iter_{iter_idx}', input_prompt[0])
+
+            generation_result = self.generator.generate(input_prompt)
+            item.update_output(f'llm_gen_response_iter_{iter_idx}', generation_result[0])
+
+            judge_prompt = [self.judge_prompt_template.get_string(
+                question=question, answer_str=generation_result
+            )]
+            item.update_output(f'judge_prompt_iter_{iter_idx}', judge_prompt[0])
+
+            judge_result = self.generator.generate(judge_prompt)[0]
+            item.update_output(f'judge_result_iter_{iter_idx}', judge_result)
+
+            if judge_result == "1":
+                break
+
+        item.update_output('pred', generation_result[0])
+        return
+    
+    def run(self, dataset, do_eval=True, pred_process_fun=None):
+        for item in tqdm(dataset, desc="Inference: "):
+            self.run_item(item)
+
+        dataset = self.evaluate(dataset, do_eval=do_eval, pred_process_fun=pred_process_fun)
         return dataset
 
 class SelfRAGPipeline(BasicPipeline):
@@ -806,3 +900,93 @@ class SelfAskPipeline(BasicPipeline):
         dataset = self.evaluate(dataset, do_eval=do_eval, pred_process_fun=pred_process_fun)
         return dataset
 
+
+
+#     def run(self, dataset, do_eval=True, pred_process_fun=None):
+#         questions = dataset.question
+#         retrieval_results = self.retriever.batch_search(questions)
+#         num_tasks = len(questions)
+# 
+#         # run in batch
+#         past_generation_results = [] # list of N items
+#         finished_tasks = []
+#         finished_retrieval_results = []
+#         finished_generation_results = []
+#         for iter_idx in range(self.iter_num):
+#             print(iter_idx)
+#             if iter_idx == 0:
+#                 past_retrieval_results = retrieval_results
+#                 past_generation_results = None
+#             else:
+#                 questions = dataset.question
+#                 # past_retrieval_results = retrieval_results
+#                 assert len(questions) == len(past_generation_results)
+#             assert len(questions) == len(past_retrieval_results)
+#             
+#             dataset.update_output(f'original_retrieval_query_iter_{iter_idx}', questions)
+#             dataset.update_output(f'original_retrieval_results_iter_{iter_idx}', retrieval_results)
+# 
+#             step_decompose_retrieval_query = self.step_decompose_query_transform(
+#                 input_query=questions, 
+#                 retrieval_results=past_retrieval_results, 
+#                 previous_gen=past_generation_results
+#             )
+#             dataset.update_output(f'step_decompose_retrieval_query_iter_{iter_idx}', questions)
+# 
+#             retrieval_results = self.retriever.batch_search(step_decompose_retrieval_query)
+#             dataset.update_output(f'step_decompose_retrieval_results_iter_{iter_idx}', retrieval_results)
+# 
+#             input_prompts = [self.prompt_template.get_string(
+#                 question=q, retrieval_result=r) for q,r in zip(questions, retrieval_results)]
+# 
+#             dataset.update_output(f'prompt_iter_{iter_idx}', input_prompts)
+# 
+#             generation_results = self.generator.generate(input_prompts)
+# 
+#             dataset.update_output(f'pred_iter_{iter_idx}', generation_results)
+# 
+#             judge_prompts = [
+#                 self.judge_prompt_template.get_string(question=q, answer_str=ans) 
+#                 for q, ans in zip(questions, generation_results)
+#             ]
+# 
+#             dataset.update_output(f'judge_prompt_iter_{iter_idx}', judge_prompts)
+# 
+#             judge_results = self.generator.generate(judge_prompts)
+# 
+#             dataset.update_output(f'judge_results_iter_{iter_idx}', judge_results)
+# 
+#             split_flags = [j != "1" for j in judge_results]
+#             cont_dataset, finished_dataset = split_dataset(dataset, split_flags)
+# 
+#             finished_tasks.append(finished_dataset)
+#             dataset = cont_dataset
+# 
+#             past_retrieval_results = []
+#             past_generation_results = []
+#             for i, flag in enumerate(split_flags):
+#                 if flag == True:
+#                     past_retrieval_results.append(retrieval_results[i])
+#                     past_generation_results.append(generation_results[i])
+#                 else:
+#                     finished_retrieval_results.append(retrieval_results[i])
+#                     finished_generation_results.append(generation_results[i])
+#             
+#             print(len(finished_generation_results))
+#             breakpoint()
+#             if len(finished_generation_results) == num_tasks:
+#                 break
+# 
+#         finished_tasks.append(cont_dataset)
+#         dataset = self.merge_dataset(finished_tasks)
+# 
+#         for i in range(len(past_retrieval_results)):
+#             finished_retrieval_results.append(past_retrieval_results[i])
+#             finished_generation_results.append(past_generation_results[i])
+# 
+#         # use last retrieval result for evaluation
+#         dataset.update_output("retrieval_result", finished_retrieval_results)
+#         dataset.update_output("pred", finished_generation_results)
+#         dataset = self.evaluate(dataset, do_eval=do_eval, pred_process_fun=pred_process_fun)
+# 
+#         return dataset

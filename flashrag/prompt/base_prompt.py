@@ -63,9 +63,15 @@ class PromptTemplate:
             else:
                 formatted_reference = ""
 
+        if previous_gen is None:
+            formatted_previous_gen = None
+        else:
+            formatted_previous_gen = previous_gen
+
         input_params = {
             "question": question,
-            "reference": formatted_reference
+            "reference": formatted_reference,
+            "previous_gen": formatted_previous_gen
         }
         input_params.update(**params)
 
@@ -107,4 +113,73 @@ class PromptTemplate:
 
         return format_reference
 
+DEFAULT_STEP_DECOMPOSE_QUERY_TRANSFORM_TMPL = (
+    "The original question is as follows: {question}\n"
+    "We have an opportunity to answer some, or all of the question from a "
+    "knowledge source. "
+    "Context information for the knowledge source is provided below, as "
+    "well as previous reasoning steps.\n"
+    "Given the context and previous reasoning, return a question that can "
+    "be answered from "
+    "the context. This question can be the same as the original question, "
+    "or this question can represent a subcomponent of the overall question."
+    "It should not be irrelevant to the original question.\n"
+    "If we cannot extract more information from the context, provide 'None' "
+    "as the answer. "
+    "Some examples are given below: "
+    "\n\n"
+    "Question: How many Grand Slam titles does the winner of the 2020 Australian "
+    "Open have?\n"
+    "Knowledge source context: Provides names of the winners of the 2020 "
+    "Australian Open\n"
+    "Previous reasoning: None\n"
+    "Next question: Who was the winner of the 2020 Australian Open? "
+    "\n\n"
+    "Question: Who was the winner of the 2020 Australian Open?\n"
+    "Knowledge source context: Provides names of the winners of the 2020 "
+    "Australian Open\n"
+    "Previous reasoning: None.\n"
+    "New question: Who was the winner of the 2020 Australian Open? "
+    "\n\n"
+    "Question: How many Grand Slam titles does the winner of the 2020 Australian "
+    "Open have?\n"
+    "Knowledge source context: Provides information about the winners of the 2020 "
+    "Australian Open\n"
+    "Previous reasoning:\n"
+    "- Who was the winner of the 2020 Australian Open? \n"
+    "- The winner of the 2020 Australian Open was Novak Djokovic.\n"
+    "New question: None"
+    "\n\n"
+    "Question: How many Grand Slam titles does the winner of the 2020 Australian "
+    "Open have?\n"
+    "Knowledge source context: Provides information about the winners of the 2020 "
+    "Australian Open - includes biographical information for each winner\n"
+    "Previous reasoning:\n"
+    "- Who was the winner of the 2020 Australian Open? \n"
+    "- The winner of the 2020 Australian Open was Novak Djokovic.\n"
+    "New question: How many Grand Slam titles does Novak Djokovic have? "
+    "\n\n"
+    "Question: {question}\n"
+    "Knowledge source context: {reference}\n"
+    "Previous reasoning: {previous_gen}\n"
+    "New question: "
+)
 
+DEFAULT_JUDGE_TMPL = (
+    "The original question is as follows: {question}\n"
+    "And we have an following answer: {answer_str}\n"
+    "Please judge the answer is correct or not.\n"
+    "If the answer is correct, please return '1', otherwise, please return '0'.\n"
+    "Your judgement:"
+)
+
+DEFAULT_TREE_SUMMARIZE_TMPL = (
+    "Context information from multiple sources is below.\n"
+    "---------------------\n"
+    "{reference}\n"
+    "---------------------\n"
+    "Given the information from multiple sources and not prior knowledge, "
+    "answer the query.\n"
+    # "Query: {question}\n"
+    # "Answer: "
+)

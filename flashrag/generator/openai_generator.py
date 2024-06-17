@@ -48,7 +48,7 @@ class OpenaiGenerator:
 
     def generate(self, input_list: List[List], batch_size=None, return_scores=False, **params) -> List[str]:
         # deal with single input
-        if len(input_list) == 1:
+        if (len(input_list) == 1) and (type(input_list[0]) != list):
             input_list = [input_list]
         if batch_size is None:
             batch_size = self.batch_size
