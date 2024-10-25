@@ -4,7 +4,7 @@ We tested all implemented methods under a unified setting. Users only need to do
 
 ## Global Setting
 
-**Retriever Setting**: In our main experiments, we utilize [E5-base-v2](https://huggingface.co/intfloat/e5-base-v2) as the retriever, retrieving five documents per query. We use the DPR version of the Wikipedia December 2018 dataset as our retrieval corpus, which can be downloaded from our dataset hosting page [here](https://huggingface.co/datasets/RUC-NLPIR/FlashRAG_datasets). 
+**Retriever Setting**: In our main experiments, we utilize [E5-base-v2](https://huggingface.co/intfloat/e5-base-v2) as the retriever, retrieving five documents per query. We use the DPR version of the Wikipedia December 2018 dataset as our retrieval corpus, which can be downloaded from our dataset hosting page [here](https://huggingface.co/datasets/ignore/FlashRAG_datasets). 
 In subsequent retrieval experiments, we employ both BM25 and [bge-base-en-v1.5](https://huggingface.co/BAAI/bge-base-en-v1.5) as additional retrievers. The BM25 experiments are conducted using Pyserini. During index construction, the maximum padding length is set to 512, while the maximum query padding length is set to 128 during retrieval. The batch size for retrieval is 1024, with fp16 enabled. We employ the Faiss Flat index in indexing for accuracy.
 
 **Generator Setting**: We employ [Llama3-8B-instruct](https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct) as the generator in our main experiment, with a maximum input length of 2048 and a maximum output length of 32. Inference is performed using the vllm framework without sampling during generation. In subsequent generator experiments, we employ Qwen1.5-14B as additional generators. The experiments are conducted using four NVIDIA A100 80G GPUs.
@@ -46,9 +46,3 @@ In addition to the general settings mentioned above, each method often has its o
 **SKR**: We implement the SKR-knn method, which requires an encoder model and inference-time training data. Specifically, it identifies the most similar queries from the training data based on the input query, determining whether the input query needs retrieval. Our library includes the training data provided by the authors; the corresponding encoder model can be downloaded [here](https://huggingface.co/princeton-nlp/sup-simcse-bert-base-uncased).
 
 **Self-RAG**: We use the Llama2-7B checkpoint provided by Self-RAG [here](https://huggingface.co/selfrag/selfrag_llama2_7b), setting the max output tokens to 100 to ensure proper operation. The temperature is set to 0, and `top_p` is set to 1.
-
-**IRCoT**: For all experiments, we used one shot example to add prompts. The example comes from [the demonstration file](https://github.com/StonyBrookNLP/ircot/blob/main/prompts/2wikimultihopqa/gold_with_3_distractors_context_cot_qa_codex.txt) provided by IRCoT. Max iter is set to 2.
-
-**Trace**: This method requires first extracting triples from the search results and then constructing a reasoning chain. These two steps depend on the prompt of the feed shot for LLM. Follow the original work, we use Llama3-8B-instruct to do these steps, use 3 examplars in each prompt. For datasets that don't have examplars, we use the examplars from 2WikiMultihopQA as a substitute. Other hyperparameters follow default settings in our code.
-
-**Spring**: This model needs to incorporate the embedding of virtual tokens for training on top of its own generator. Due to only training models from the llama2 series, we conducted experiments on `llama2-7B-chat`.

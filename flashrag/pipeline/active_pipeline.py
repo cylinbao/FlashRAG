@@ -1,15 +1,18 @@
 import re
 from tqdm import tqdm
 import numpy as np
+import itertools
 from transformers import AutoTokenizer, PreTrainedTokenizer, PreTrainedTokenizerFast
-from flashrag.utils import get_retriever, get_generator, selfask_pred_parse, ircot_pred_parse
+from flashrag.dataset.utils import split_dataset, merge_dataset
+from flashrag.utils import get_retriever, get_generator
 from flashrag.pipeline import BasicPipeline
 from flashrag.dataset import get_batch_dataset, merge_batch_dataset
 from flashrag.prompt import PromptTemplate
-
+from flashrag.dataset import Dataset
+import time
 
 class IterativePipeline(BasicPipeline):
-    def __init__(self, config, prompt_template=None, iter_num=3):
+    def __init__(self, config, prompt_template=None, iter_num = 3):
         super().__init__(config, prompt_template)
         self.iter_num = iter_num
         self.retriever = get_retriever(config)
@@ -19,28 +22,27 @@ class IterativePipeline(BasicPipeline):
         questions = dataset.question
 
         # run in batch
-        past_generation_result = []  # list of N items
+        past_generation_result = [] # list of N items
         for iter_idx in range(self.iter_num):
             if iter_idx == 0:
                 input_query = questions
             else:
                 assert len(questions) == len(past_generation_result)
-                input_query = [f"{q} {r}" for q, r in zip(questions, past_generation_result)]
-
+                input_query = [f"{q} {r}" for q,r in zip(questions, past_generation_result)]
+            
+            dataset.update_output(f'retrieval_query_iter_{iter_idx}', input_query)
             # generation-augmented retrieval
             retrieval_results = self.retriever.batch_search(input_query)
-            dataset.update_output(f"retrieval_result_iter_{iter_idx}", retrieval_results)
+            dataset.update_output(f'retrieval_result_iter_{iter_idx}', retrieval_results)
 
             # retrieval-augmented generation
             # input_prompts = self.build_prompt(questions, retrieval_results)
-            input_prompts = [
-                self.prompt_template.get_string(question=q, retrieval_result=r)
-                for q, r in zip(questions, retrieval_results)
-            ]
+            input_prompts = [self.prompt_template.get_string(
+                question=q, retrieval_result=r) for q,r in zip(questions, retrieval_results)]
 
-            dataset.update_output(f"prompt_iter_{iter_idx}", input_prompts)
+            dataset.update_output(f'prompt_iter_{iter_idx}', input_prompts)
             past_generation_result = self.generator.generate(input_prompts)
-            dataset.update_output(f"pred_iter_{iter_idx}", past_generation_result)
+            dataset.update_output(f'pred_iter_{iter_idx}', past_generation_result)
 
         # use last retrieval result for evaluation
         dataset.update_output("retrieval_result", retrieval_results)
@@ -50,32 +52,103 @@ class IterativePipeline(BasicPipeline):
 
         return dataset
 
+class LlamaIndexIterativePipeline(BasicPipeline):
+    def __init__(self, config, prompt_template=None, iter_num=3):
+        super().__init__(config, prompt_template)
+        self.iter_num = iter_num
+        self.retriever = get_retriever(config)
+        self.generator = get_generator(config)
+
+        from flashrag.prompt import PromptTemplate
+        from flashrag.prompt import DEFAULT_STEP_DECOMPOSE_QUERY_TRANSFORM_TMPL, DEFAULT_JUDGE_TMPL
+
+        self.step_decompose_template = PromptTemplate(
+            config = config,
+            system_prompt =  DEFAULT_STEP_DECOMPOSE_QUERY_TRANSFORM_TMPL
+        )
+
+        self.judge_prompt_template = PromptTemplate(
+            config = config,
+            system_prompt =  DEFAULT_JUDGE_TMPL
+        )
+    
+    def step_decompose_query_transform(self, item, iter, query, prev_gen=None):
+        input_prompt = self.step_decompose_template.get_string(
+            question=query, previous_gen=prev_gen
+        ) 
+        item.update_output(f'step_decompose_prompt_iter_{iter}', input_prompt[0])
+
+        step_decompose_query = self.generator.generate(input_prompt)
+
+        return step_decompose_query
+
+    def run_item(self, item):
+        question = item.question
+
+        for iter_idx in range(self.iter_num):
+            if iter_idx == 0:
+                past_generation_result = None
+            else:
+                past_generation_result = generation_result
+
+            step_decompose_retrieval_query = self.step_decompose_query_transform(
+                item, iter_idx, question, 
+                prev_gen=past_generation_result
+            )
+            if step_decompose_retrieval_query[0] == "None":
+                step_decompose_retrieval_query = [question]
+            item.update_output(
+                f'step_decomposed_retrieval_query_iter_{iter_idx}', 
+                step_decompose_retrieval_query[0]                    
+            )
+
+            retrieval_results = self.retriever.search(step_decompose_retrieval_query)
+            item.update_output(f'retrieval_results_iter_{iter_idx}', retrieval_results)
+
+            input_prompt = [self.prompt_template.get_string(
+                question=question, retrieval_result=retrieval_results
+            )]
+            item.update_output(f'llm_prompt_iter_{iter_idx}', input_prompt[0])
+
+            generation_result = self.generator.generate(input_prompt)
+            item.update_output(f'llm_response_iter_{iter_idx}', generation_result[0])
+
+            judge_prompt = [self.judge_prompt_template.get_string(
+                question=question, answer_str=generation_result
+            )]
+            item.update_output(f'judge_prompt_iter_{iter_idx}', judge_prompt[0])
+
+            judge_result = self.generator.generate(judge_prompt)[0]
+            item.update_output(f'judge_result_iter_{iter_idx}', judge_result)
+
+            if judge_result == "1":
+                break
+
+        item.update_output('pred', generation_result[0])
+        return
+    
+    def run(self, dataset, do_eval=True, pred_process_fun=None):
+        for item in tqdm(dataset, desc="Inference: "):
+            self.run_item(item)
+
+        dataset = self.evaluate(dataset, do_eval=do_eval, pred_process_fun=pred_process_fun)
+        return dataset
 
 class SelfRAGPipeline(BasicPipeline):
     # Source: https://github.com/AkariAsai/self-rag
     # The code is released under MIT license
 
     rel_tokens_names = ["[Irrelevant]", "[Relevant]"]
-    retrieval_tokens_names = ["[No Retrieval]", "[Retrieval]", "[Continue to Use Evidence]"]
-    utility_tokens_names = ["[Utility:1]", "[Utility:2]", "[Utility:3]", "[Utility:4]", "[Utility:5]"]
-    ground_tokens_names = ["[Fully supported]", "[Partially supported]", "[No support / Contradictory]"]
-    other_special_tokens = ["<s>", "</s>", "[PAD]", "<unk>", "<paragraph>", "</paragraph>"]
-    control_tokens = [
-        "[Fully supported]",
-        "[Partially supported]",
-        "[No support / Contradictory]",
-        "[No Retrieval]",
-        "[Retrieval]",
-        "[Irrelevant]",
-        "[Relevant]",
-        "<paragraph>",
-        "</paragraph>",
-        "[Utility:1]",
-        "[Utility:2]",
-        "[Utility:3]",
-        "[Utility:4]",
-        "[Utility:5]",
-    ]
+    retrieval_tokens_names = ["[No Retrieval]",
+                            "[Retrieval]", "[Continue to Use Evidence]"]
+    utility_tokens_names = ["[Utility:1]", "[Utility:2]",
+                            "[Utility:3]", "[Utility:4]", "[Utility:5]"]
+    ground_tokens_names = ["[Fully supported]",
+                        "[Partially supported]", "[No support / Contradictory]"]
+    other_special_tokens = ["<s>", "</s>", "[PAD]",
+                            "<unk>", "<paragraph>", "</paragraph>"]
+    control_tokens = ["[Fully supported]", "[Partially supported]", "[No support / Contradictory]", "[No Retrieval]", "[Retrieval]",
+                    "[Irrelevant]", "[Relevant]", "<paragraph>", "</paragraph>", "[Utility:1]", "[Utility:2]", "[Utility:3]", "[Utility:4]", "[Utility:5]"]
 
     task_inst = {
         "wow": "Given a chat history separated by new lines, generates an informative, knowledgeable and engaging response. ",
@@ -86,41 +159,36 @@ class SelfRAGPipeline(BasicPipeline):
         "arc_c": "Given four answer candidates, A, B, C and D, choose the best answer choice.",
         "trex": "Given the input format 'Subject Entity [SEP] Relationship Type,' predict the target entity.",
         "asqa": "Answer the following question. The question may be ambiguous and have multiple correct answers, and in that case, you have to provide a long-form answer including all correct answers.",
-        "normal_qa": "Answer the following question, give me a short answer.",
+        'normal_qa': "Answer the following question, give me a short answer.",
+        'no_inst': None 
     }
 
-    def __init__(
-        self,
-        config,
-        threhsold=0.2,
-        max_depth=2,
-        beam_width=2,
-        w_rel=1.0,
-        w_sup=1.0,
-        w_use=1.0,
-        use_grounding=True,
-        use_utility=True,
-        use_seqscore=True,
-        ignore_cont=True,
-        mode="adaptive_retrieval",
-        prompt_template=None,
-    ):
+
+    def __init__(self, config, threhsold=0.2, max_depth=2, beam_width=2,
+                 w_rel=1.0, w_sup=1.0, w_use=1.0,
+                 use_grounding=True, use_utility=True, use_seqscore=True, ignore_cont=True,
+                 mode='adaptive_retrieval', prompt_template = None):
 
         super().__init__(config, prompt_template)
         self.retriever = get_retriever(config)
         self.generator = get_generator(config)
 
-        assert mode in ["adaptive_retrieval", "always_retrieve", "no_retrieval"]
+        self.retriever_topk = config['retrieval_topk']
 
-        self.task = config["dataset_name"]
-        self.task_instruction = self.task_inst.get(self.task, self.task_inst["normal_qa"])
+        assert mode in ['adaptive_retrieval', 'always_retrieve', 'no_retrieval']
+
+        self.task = config['dataset_name']
+        # self.task_instruction = self.task_inst.get(self.task, self.task_inst['normal_qa'])
+        self.task_instruction = self.task_inst.get(self.task, self.task_inst['no_inst'])
         if self.task_instruction is not None:
             question_inst = self.task_instruction + "\n\n## Input:\n\n{question}"
         else:
-            question_inst = "{question}"
+            question_inst = '{question}'
         if prompt_template is None:
             self.prompt_template = PromptTemplate(
-                config, user_prompt="### Instruction:\n" + question_inst + "\n\n### Response:\n", enable_chat=False
+                config,
+                user_prompt="### Instruction:\n" + question_inst + "\n\n### Response:\n",
+                enable_chat=False
             )
 
         self.threshold = threhsold
@@ -132,14 +200,15 @@ class SelfRAGPipeline(BasicPipeline):
         self.use_seqscore = use_seqscore
         self.ignore_cont = ignore_cont
         self.mode = mode
-        self.closed = self.task in ["fever", "arc_c"]
-        tokenizer = AutoTokenizer.from_pretrained(config["generator_model_path"], padding_side="left")
+        self.closed = self.task in ['fever','arc_c']
+        tokenizer = AutoTokenizer.from_pretrained(config['generator_model_path'], padding_side="left")
         self.ret_tokens, self.rel_tokens, self.grd_tokens, self.ut_tokens = self.load_special_tokens(
-            tokenizer, use_grounding=use_grounding, use_utility=use_utility
-        )
+            tokenizer, use_grounding = use_grounding, use_utility = use_utility)
+
 
     def load_special_tokens(self, tokenizer, use_grounding, use_utility):
-        ret_tokens = {token: tokenizer.convert_tokens_to_ids(token) for token in self.retrieval_tokens_names}
+        ret_tokens = {token: tokenizer.convert_tokens_to_ids(
+            token) for token in self.retrieval_tokens_names}
         rel_tokens = {}
         for token in ["[Irrelevant]", "[Relevant]"]:
             rel_tokens[token] = tokenizer.convert_tokens_to_ids(token)
@@ -159,7 +228,7 @@ class SelfRAGPipeline(BasicPipeline):
         return ret_tokens, rel_tokens, grd_tokens, ut_tokens
 
     def judge_retrieve(self, input_prompts):
-        """Calculate whether a retrieve is required based on the output probability of
+        """Calculate whether a retrieve is required based on the output probability of 
         the special token in the model"""
 
         if self.mode != "always_retrieve":
@@ -167,7 +236,7 @@ class SelfRAGPipeline(BasicPipeline):
             all_pred_token_ids = []
             all_pred_text = []
             all_pred_log_probs = []
-            preds = self.generator.generate(input_prompts, return_raw_output=True, logprobs=32000)
+            preds = self.generator.generate(input_prompts, return_raw_output=True, logprobs=32016)
             for single_pred in preds:
                 pred_token_ids = single_pred.outputs[0].token_ids
                 pred_text = single_pred.outputs[0].text
@@ -192,10 +261,8 @@ class SelfRAGPipeline(BasicPipeline):
                             score_dict[tok] = -100
                         prob = all_pred_log_probs[idx][0][tok_id].logprob
                         score_dict[tok] = float(prob)
-                    do_retrieve = (
-                        score_dict["[Retrieval]"] / (score_dict["[Retrieval]"] + score_dict["[No Retrieval]"])
-                        > self.threshold
-                    )
+                    do_retrieve = score_dict["[Retrieval]"] / (
+                        score_dict["[Retrieval]"] + score_dict["[No Retrieval]"]) > self.threshold
                 else:
                     do_retrieve = "[Retrieval]" in all_pred_text[idx]
 
@@ -215,7 +282,9 @@ class SelfRAGPipeline(BasicPipeline):
             pred_token_ids = pred.outputs[0].token_ids
             pred_text = pred.outputs[0].text
             pred_log_probs = pred.outputs[0].logprobs
-            seq_score = pred.outputs[0].cumulative_logprob / max(len(pred.outputs[0].token_ids), 1)
+            seq_score = pred.outputs[0].cumulative_logprob / \
+                max(len(pred.outputs[0].token_ids), 1)
+
             relevance_score_dict.setdefault(p_idx, {})
             grd_score_dict.setdefault(p_idx, {})
             ut_score_dict.setdefault(p_idx, {})
@@ -235,8 +304,9 @@ class SelfRAGPipeline(BasicPipeline):
                     for token, token_id in self.grd_tokens.items():
                         prob = pred_log_probs[idx][token_id].logprob if token_id in pred_log_probs[idx] else -100
                         grd_score_dict[p_idx][token] = np.exp(float(prob))
-            utility_token_appear_indices = []
+
             if self.ut_tokens is not None:
+                utility_token_appear_indices = []
                 for tok_idx, tok in enumerate(pred_token_ids):
                     if tok in list(self.ut_tokens.values()):
                         utility_token_appear_indices.append(tok_idx)
@@ -247,14 +317,12 @@ class SelfRAGPipeline(BasicPipeline):
                         ut_score_dict[p_idx][token] = np.exp(float(prob))
 
             relevance_score = relevance_score_dict[p_idx]["[Relevant]"] / (
-                np.sum(list(relevance_score_dict[p_idx].values()))
-            )
+                np.sum(list(relevance_score_dict[p_idx].values())))
 
             if len(grd_score_dict[p_idx]) == 3:
                 gt_sum = np.sum(list(grd_score_dict[p_idx].values()))
                 ground_score = (grd_score_dict[p_idx]["[Fully supported]"] / gt_sum) + 0.5 * (
-                    grd_score_dict[p_idx]["[Partially supported]"] / gt_sum
-                )
+                    grd_score_dict[p_idx]["[Partially supported]"] / gt_sum)
             else:
                 ground_score = 0.0
 
@@ -262,37 +330,29 @@ class SelfRAGPipeline(BasicPipeline):
                 ut_sum = np.sum(list(ut_score_dict[p_idx].values()))
                 ut_scores = [-1, -0.5, 0, 0.5, 1]
                 utility_score = np.sum(
-                    [
-                        ut_scores[i] * (ut_score_dict[p_idx]["[Utility:{}]".format(i + 1)] / ut_sum)
-                        for i in range(len(ut_scores))
-                    ]
-                )
+                    [ut_scores[i] * (ut_score_dict[p_idx]["[Utility:{}]".format(i+1)] / ut_sum) for i in range(len(ut_scores))])
             else:
                 utility_score = 0.0
 
             if self.use_seqscore is True:
-                final_score = (
-                    np.exp(seq_score)
-                    + self.w_rel * relevance_score
-                    + self.w_sup * ground_score
-                    + self.w_use * utility_score
-                )
+                final_score = np.exp(seq_score) + self.w_rel * relevance_score + \
+                    self.w_sup * ground_score + self.w_use * utility_score
             else:
-                final_score = self.w_rel * relevance_score + self.w_sup * ground_score + self.w_use * utility_score
+                final_score = self.w_rel * relevance_score + \
+                    self.w_sup * ground_score + self.w_use * utility_score
 
-            overall_scores[p_idx] = {
-                "final_score": final_score,
-                "relevance_score": relevance_score,
-                "ground_score": ground_score,
-                "utility_score": utility_score,
-                "relevance_score_dict": relevance_score_dict,
-                "grd_score_dict": grd_score_dict,
-                "ut_score_dict": utility_score,
-            }
-            results["retrieval_{}".format(p_idx)] = {"pred": pred_text, "score": final_score}
+            overall_scores[p_idx] = {"final_score": final_score,
+                                     "relevance_score": relevance_score,
+                                     "ground_score": ground_score,
+                                     "utility_score": utility_score,
+                                     "relevance_score_dict": relevance_score_dict,
+                                     "grd_score_dict": grd_score_dict,
+                                     "ut_score_dict": utility_score}
+            results["retrieval_{}".format(p_idx)] = {
+                "pred": pred_text, "score": final_score}
 
         # modify and add do retrieve tokens (only used in long-form generation)
-        final_preds = []
+        final_preds =[]
         if "[No Retrieval]" in pred_text:
             ret_token_appear_indices = []
             substrings = pred_text.split("[No Retrieval]")
@@ -309,12 +369,8 @@ class SelfRAGPipeline(BasicPipeline):
                     prob = pred_log_probs[idx][tok_id].logprob if tok_id in pred_log_probs[idx] else -100
                     ret_token_score_dict[order][tok] = np.exp(prob)
                 if ret_token_score_dict[order]["[Retrieval]"] + ret_token_score_dict[order]["[No Retrieval]"] != 0.0:
-                    do_retrieve = (
-                        ret_token_score_dict[order]["[Retrieval]"]
-                        + ret_token_score_dict[order]["[Continue to Use Evidence]"]
-                    ) / (
-                        ret_token_score_dict[order]["[Retrieval]"] + ret_token_score_dict[order]["[No Retrieval]"]
-                    ) > self.threshold
+                    do_retrieve = (ret_token_score_dict[order]["[Retrieval]"] + ret_token_score_dict[order]["[Continue to Use Evidence]"]) / (
+                        ret_token_score_dict[order]["[Retrieval]"] + ret_token_score_dict[order]["[No Retrieval]"]) > self.threshold
                 else:
                     do_retrieve = 0.0
                 if do_retrieve > self.threshold:
@@ -336,10 +392,11 @@ class SelfRAGPipeline(BasicPipeline):
 
         return results, final_preds, scores, overall_scores
 
+
     def postprocess_prediction(self, pred):
         def fix_spacing(input_text):
             # Add a space after periods that lack whitespace
-            output_text = re.sub(r"(?<=\w)([.!?])(?=\w)", r"\1 ", input_text)
+            output_text = re.sub(r'(?<=\w)([.!?])(?=\w)', r'\1 ', input_text)
             return output_text
 
         for token in self.control_tokens:
@@ -360,6 +417,7 @@ class SelfRAGPipeline(BasicPipeline):
 
         return fix_spacing(pred)
 
+
     def select_best_prediction(self, results):
         answer2score = {}
         if self.closed is True:
@@ -368,11 +426,14 @@ class SelfRAGPipeline(BasicPipeline):
                 score = result["score"]
                 answer2score.setdefault(answer, 0)
                 answer2score[answer] += score
-            sorted_answers = sorted(answer2score.items(), key=lambda x: x[1], reverse=True)
+            sorted_answers = sorted(
+                answer2score.items(), key=lambda x: x[1], reverse=True)
             best_pred = sorted_answers[0][0]
         else:
-            path2score = {key: item["score"] for key, item in results.items() if key != "no_retrieval"}
-            best_path = sorted(path2score.items(), key=lambda x: x[1], reverse=True)[0][0]
+            path2score = {key: item["score"] for key,
+                          item in results.items() if key != "no_retrieval"}
+            best_path = sorted(path2score.items(),
+                               key=lambda x: x[1], reverse=True)[0][0]
             best_pred = results[best_path]["pred"]
 
         return best_pred
@@ -383,19 +444,13 @@ class SelfRAGPipeline(BasicPipeline):
         node_id = 0
         prediction_tree = {}
         levels = {}
-        prediction_tree[node_id] = {
-            "prompt": prompt,
-            "pred": "[Retrieval]",
-            "processed_pred": "",
-            "score": None,
-            "ctx": None,
-            "parent": None,
-        }
+        prediction_tree[node_id] = {"prompt": prompt, "pred": "[Retrieval]",
+                                    "processed_pred": "", "score": None, "ctx": None, "parent": None}
         levels[0] = [0]
         while curr_depth < self.max_depth:
             levels[curr_depth] = []
-            if curr_depth - 1 in levels and terminated is False:
-                for node in levels[curr_depth - 1]:
+            if curr_depth-1 in levels and terminated is False:
+                for node in levels[curr_depth-1]:
                     pred = prediction_tree[node]["pred"]
                     if pred == "</s>":
                         terminated = True
@@ -407,13 +462,8 @@ class SelfRAGPipeline(BasicPipeline):
                         retrieval_results = {}
 
                         if item_retrieval_result is not None:
-                            aug_prompts = [
-                                prompt
-                                + prev_generation
-                                + "[Retrieval]"
-                                + "<paragraph>{}</paragraph>".format(para["contents"])
-                                for para in item_retrieval_result
-                            ]
+                            aug_prompts = [prompt + prev_generation + "[Retrieval]" + "<paragraph>{}</paragraph>".format(
+                                para['contents']) for para in item_retrieval_result]
                         else:
                             aug_prompts = [prompt + prev_generation]
 
@@ -421,20 +471,17 @@ class SelfRAGPipeline(BasicPipeline):
                         _, preds, scores, overall_score_dict = self.critic_preds(item_pred)
 
                         for i, (pred, p_score) in enumerate(zip(preds, scores)):
-                            retrieval_results[i] = {"pred": pred, "score": p_score}
+                            retrieval_results[i] = {
+                                "pred": pred, "score": p_score}
 
                         for i, result in retrieval_results.items():
                             node_id += 1
-                            node_score = result["score"] * score if score is not None else result["score"]
+                            node_score = result["score"] * \
+                                score if score is not None else result["score"]
                             pred = result["pred"]
-                            prediction_tree[node_id] = {
-                                "prompt": prompt + prev_generation,
-                                "pred": pred,
-                                "score": node_score,
-                                "ctx": item_retrieval_result[i],
-                                "parent": node,
-                                "overall_score_dict": overall_score_dict,
-                            }
+                            prediction_tree[node_id] = {"prompt": prompt + prev_generation, "pred": pred,
+                                                        "score": node_score, "ctx": item_retrieval_result[i], "parent": node,
+                                                        "overall_score_dict": overall_score_dict}
 
                             if "[Retrieval]" in pred:
                                 gen_result_index = pred.index("[Retrieval]")
@@ -445,8 +492,10 @@ class SelfRAGPipeline(BasicPipeline):
                             levels[curr_depth].append(node_id)
 
                 current_rank = levels[curr_depth]
-                node2score = {node_id: prediction_tree[node_id]["score"] for node_id in current_rank}
-                top_nodes = sorted(node2score.items(), key=lambda x: x[1], reverse=True)[: self.beam_width]
+                node2score = {
+                    node_id: prediction_tree[node_id]["score"] for node_id in current_rank}
+                top_nodes = sorted(node2score.items(), key=lambda x: x[1], reverse=True)[
+                    :self.beam_width]
                 levels[curr_depth] = [node[0] for node in top_nodes]
                 curr_depth += 1
             else:
@@ -477,65 +526,21 @@ class SelfRAGPipeline(BasicPipeline):
         original_splitted_sentences = {}
         ctxs = {}
         for path_i, nodes in best_selections.items():
-            final_prediction[path_i] = " ".join(
-                [
-                    prediction_tree[node]["processed_pred"]
-                    for node in nodes
-                    if node is not None
-                    and (
-                        self.ignore_cont is False
-                        or (
-                            self.ignore_cont is True
-                            and "[No support / Contradictory]" not in prediction_tree[node]["processed_pred"]
-                        )
-                    )
-                ]
-            )
-            splitted_sentences[path_i] = [
-                prediction_tree[node]["processed_pred"]
-                for node in nodes
-                if node is not None
-                and (
-                    self.ignore_cont is False
-                    or (
-                        self.ignore_cont is True
-                        and "[No support / Contradictory]" not in prediction_tree[node]["processed_pred"]
-                    )
-                )
-            ]
-            original_splitted_sentences[path_i] = [
-                prediction_tree[node]["pred"]
-                for node in nodes
-                if node is not None
-                and (
-                    self.ignore_cont is False
-                    or (
-                        self.ignore_cont is True
-                        and "[No support / Contradictory]" not in prediction_tree[node]["processed_pred"]
-                    )
-                )
-            ]
-            ctxs[path_i] = [
-                prediction_tree[node]["ctx"]
-                for node in nodes
-                if node is not None
-                and (
-                    self.ignore_cont is False
-                    or (
-                        self.ignore_cont is True
-                        and "[No support / Contradictory]" not in prediction_tree[node]["processed_pred"]
-                    )
-                )
-            ]
+            final_prediction[path_i] = " ".join([prediction_tree[node]["processed_pred"] for node in nodes if node is not None and (
+                self.ignore_cont is False or (self.ignore_cont is True and "[No support / Contradictory]" not in prediction_tree[node]["processed_pred"]))])
+            splitted_sentences[path_i] = [prediction_tree[node]["processed_pred"] for node in nodes if node is not None and (
+                self.ignore_cont is False or (self.ignore_cont is True and "[No support / Contradictory]" not in prediction_tree[node]["processed_pred"]))]
+            original_splitted_sentences[path_i] = [prediction_tree[node]["pred"] for node in nodes if node is not None and (
+                self.ignore_cont is False or (self.ignore_cont is True and "[No support / Contradictory]" not in prediction_tree[node]["processed_pred"]))]
+            ctxs[path_i] = [prediction_tree[node]["ctx"] for node in nodes if node is not None and (self.ignore_cont is False or (
+                self.ignore_cont is True and "[No support / Contradictory]" not in prediction_tree[node]["processed_pred"]))]
 
-        result = {
-            "final_prediction": final_prediction,
-            "splitted_sentences": splitted_sentences,
-            "original_splitted_sentences": original_splitted_sentences,
-            "best_selections": best_selections,
-            "ctxs": ctxs,
-            "prediction_tree": prediction_tree,
-        }
+        result = {"final_prediction": final_prediction,
+                "splitted_sentences": splitted_sentences,
+                "original_splitted_sentences": original_splitted_sentences,
+                "best_selections": best_selections,
+                "ctxs": ctxs,
+                "prediction_tree": prediction_tree}
 
         return final_prediction[0], result
 
@@ -547,10 +552,8 @@ class SelfRAGPipeline(BasicPipeline):
             final_output = self.postprocess_prediction(pred)
         else:
             if len(self.postprocess_prediction(pred)) == 0:
-                intermediate["splitted_sentences"][0], intermediate["ctxs"][0] = (
-                    intermediate["splitted_sentences"][1],
-                    intermediate["ctxs"][1],
-                )
+                intermediate["splitted_sentences"][0], intermediate["ctxs"][
+                    0] = intermediate["splitted_sentences"][1], intermediate["ctxs"][1]
             for idx, (sent, doc) in enumerate(zip(intermediate["splitted_sentences"][0], intermediate["ctxs"][0])):
                 if len(sent) == 0:
                     continue
@@ -566,47 +569,50 @@ class SelfRAGPipeline(BasicPipeline):
             if len(final_output) > 0 and final_output[-1] == " ":
                 final_output = final_output[:-1]
             final_output = final_output.strip()
-            final_output = final_output.replace(".[Continue to Use Evidence]", " [1]. ")
+            final_output = final_output.replace(
+                ".[Continue to Use Evidence]", " [1]. ")
             final_output = final_output.replace(". [1] ", " [1]. ")
 
         return final_output
 
+
     def run_batch_pred_long_form(self, dataset):
         questions = dataset.question
         retrieval_results = self.retriever.batch_search(questions)
-        dataset.update_output("retrieval_result", retrieval_results)
+        dataset.update_output('retrieval_result', retrieval_results)
 
-        # input_prompts = self.build_prompt(questions)
+        #input_prompts = self.build_prompt(questions)
         input_prompts = [self.prompt_template.get_string(question=q) for q in questions]
 
         # determine whether to retrieve
         retrieval_flags = self.judge_retrieve(input_prompts)
-        dataset.update_output("retrieval_flag", retrieval_flags)
+        dataset.update_output('retrieval_flag', retrieval_flags)
 
         # for long form task, only support single item run
         for item, prompt, retrieval_flag in zip(dataset, input_prompts, retrieval_flags):
             if retrieval_flag:
                 pred, intermediate_result = self.run_single_beam(prompt, item_retrieval_result=item.retrieval_result)
-                item.update_output("intermediate_result", intermediate_result)
+                item.update_output('intermediate_result', intermediate_result)
 
                 if self.task == "factscore":
                     pred = self.postprocess_prediction(pred)
                 else:
-                    assert self.task in ["asqa", "eli5"]
+                    assert self.task in ['asqa','eli5']
                     pred = self.postprocess_long_form(pred, intermediate_result)
             else:
                 prompt += "[No Retrieval]"
                 pred = self.generator.generate(prompt)[0]
 
-            item.update_output("pred", pred)
+            item.update_output('pred', pred)
 
         return dataset
+
 
     def run(self, dataset, do_eval=True, pred_process_fun=None, batch_size=256, long_form=False):
         all_dataset_list = []
         run_func = self.run_batch_pred_long_form if long_form else self.run_batch_pred
         # to avoid oom
-        for batch_dataset in tqdm(get_batch_dataset(dataset, batch_size=batch_size), desc="Batch dataset: "):
+        for batch_dataset in tqdm(get_batch_dataset(dataset, batch_size=batch_size), desc='Batch dataset: '):
             batch_dataset = run_func(batch_dataset)
             all_dataset_list.append(batch_dataset)
         dataset = merge_batch_dataset(all_dataset_list)
@@ -617,56 +623,65 @@ class SelfRAGPipeline(BasicPipeline):
     def run_batch_pred(self, dataset):
         questions = dataset.question
         retrieval_results = self.retriever.batch_search(questions)
-        dataset.update_output("retrieval_result", retrieval_results)
+        # dataset.update_output('retrieval_result', retrieval_results)
 
-        # input_prompts = self.build_prompt(questions)
+        #input_prompts = self.build_prompt(questions)
         input_prompts = [self.prompt_template.get_string(question=q) for q in questions]
+        dataset.update_output('retrieval_judge_prompt', input_prompts)
 
         # determine whether to retrieve
         retrieval_flags = self.judge_retrieve(input_prompts)
-        dataset.update_output("retrieval_flag", retrieval_flags)
+        dataset.update_output('retrieval_flag', retrieval_flags)
+        dataset.update_output('retrieval_result', retrieval_results)
 
         # process input item based on whether to retrieve
         all_input_list = []
-        for idx, (prompt, item) in enumerate(zip(input_prompts, dataset)):
+        for idx, (prompt,item) in enumerate(zip(input_prompts, dataset)):
             retrieval_flag = retrieval_flags[idx]
 
             if retrieval_flag:
                 retrieval_result = retrieval_results[idx]
                 # for each doc in retrieval result, there is a prompt as input
-                prompt_list = [
-                    prompt + "[Retrieval]<paragraph>{}</paragraph>".format(para["contents"])
-                    for para in retrieval_result
-                ]
+                prompt_list = [prompt + "[Retrieval]<paragraph>{}</paragraph>".format(para['contents']) \
+                                for para in retrieval_result]
             else:
                 prompt += "[No Retrieval]"
                 prompt_list = [prompt]
 
-            item.update_output("prompt", prompt_list)
+            item.update_output('llm_prompt', prompt_list)
             all_input_list += prompt_list
 
-        batch_pred = self.generator.generate(all_input_list, return_raw_output=True, logprobs=32016)
+        # batch_pred = self.generator.generate(all_input_list, return_raw_output=True, logprobs=32016)
+        batch_pred = self.generator.generate(all_input_list, return_raw_output=True, logprobs=5000)
 
         # parse output based on retrieval flag
         pred_idx = 0
         pred_answer_list = []
-        for idx, (retrieval_flag, item) in enumerate(zip(retrieval_flags, dataset)):
+        for idx, (retrieval_flag,item) in enumerate(zip(retrieval_flags, dataset)):
             if retrieval_flag:
                 # for item that need retrieval, there may have more than one prediction
-                item_pred = batch_pred[pred_idx : pred_idx + len(retrieval_results[idx])]
+                item_pred = batch_pred[pred_idx:pred_idx+len(retrieval_results[idx])]
                 pred_idx += len(retrieval_results[idx])
-                critic_result, _, _, _ = self.critic_preds(item_pred)
-                item.update_output("critic_result", critic_result)
+                tick = time.time()
+                critic_result,_,_,_ = self.critic_preds(item_pred)
+                critic_time = time.time() - tick
+                item.update_output('critic_result', critic_result)
+                item.update_output('critic_time', critic_time)
 
                 # select best prediction
+                tick = time.time()
                 pred = self.select_best_prediction(critic_result)
-
+                select_time = time.time() - tick
+                item.update_output('select_time', select_time)
             else:
-                item_pred = batch_pred[pred_idx : pred_idx + 1][0]
+                item_pred = batch_pred[pred_idx:pred_idx+1][0]
                 pred_idx += 1
                 pred = item_pred.outputs[0].text
 
+            tick = time.time()
             pred = self.postprocess_prediction(pred)
+            postproc_time = time.time() - tick
+            item.update_output('postproc_time', postproc_time)
             pred_answer_list.append(pred)
 
         dataset.update_output("pred", pred_answer_list)
@@ -674,16 +689,455 @@ class SelfRAGPipeline(BasicPipeline):
         return dataset
 
 
+class SelfRAGPipeline2(BasicPipeline):
+    # Source: https://github.com/AkariAsai/self-rag
+    # The code is released under MIT license
+
+    rel_tokens_names = ["[Irrelevant]", "[Relevant]"]
+    retrieval_tokens_names = ["[No Retrieval]",
+                            "[Retrieval]", "[Continue to Use Evidence]"]
+    utility_tokens_names = ["[Utility:1]", "[Utility:2]",
+                            "[Utility:3]", "[Utility:4]", "[Utility:5]"]
+    ground_tokens_names = ["[Fully supported]",
+                        "[Partially supported]", "[No support / Contradictory]"]
+    other_special_tokens = ["<s>", "</s>", "[PAD]",
+                            "<unk>", "<paragraph>", "</paragraph>"]
+    control_tokens = ["[Fully supported]", "[Partially supported]", "[No support / Contradictory]", "[No Retrieval]", "[Retrieval]",
+                    "[Irrelevant]", "[Relevant]", "<paragraph>", "</paragraph>", "[Utility:1]", "[Utility:2]", "[Utility:3]", "[Utility:4]", "[Utility:5]"]
+
+    task_inst = {
+        "wow": "Given a chat history separated by new lines, generates an informative, knowledgeable and engaging response. ",
+        "fever": "Is the following statement correct or not? Say true if it's correct; otherwise say false.",
+        "eli5": "Provide a paragraph-length response using simple words to answer the following question.",
+        "obqa": "Given four answer candidates, A, B, C and D, choose the best answer choice.",
+        "arc_easy": "Given four answer candidates, A, B, C and D, choose the best answer choice.",
+        "arc_c": "Given four answer candidates, A, B, C and D, choose the best answer choice.",
+        "trex": "Given the input format 'Subject Entity [SEP] Relationship Type,' predict the target entity.",
+        "asqa": "Answer the following question. The question may be ambiguous and have multiple correct answers, and in that case, you have to provide a long-form answer including all correct answers.",
+        'normal_qa': "Answer the following question, give me a short answer.",
+        'no_inst': None 
+    }
+
+
+    def __init__(self, config, threhsold=0.2, max_depth=2, beam_width=2,
+                 w_rel=1.0, w_sup=1.0, w_use=1.0,
+                 use_grounding=True, use_utility=True, use_seqscore=True, ignore_cont=True,
+                 mode='adaptive_retrieval', prompt_template = None):
+
+        super().__init__(config, prompt_template)
+        self.retriever = get_retriever(config)
+        self.generator = get_generator(config)
+
+        self.retriever_topk = config['retrieval_topk']
+
+        assert mode in ['adaptive_retrieval', 'always_retrieve', 'no_retrieval']
+
+        self.task = config['dataset_name']
+        # self.task_instruction = self.task_inst.get(self.task, self.task_inst['normal_qa'])
+        self.task_instruction = self.task_inst.get(self.task, self.task_inst['no_inst'])
+        if self.task_instruction is not None:
+            question_inst = self.task_instruction + "\n\n## Input:\n\n{question}"
+        else:
+            question_inst = '{question}'
+        if prompt_template is None:
+            self.prompt_template = PromptTemplate(
+                config,
+                user_prompt="### Instruction:\n" + question_inst + "\n\n### Response:\n",
+                enable_chat=False
+            )
+
+        self.threshold = threhsold
+        self.max_depth = max_depth
+        self.beam_width = beam_width
+        self.w_rel, self.w_sup, self.w_use = w_rel, w_sup, w_use
+        self.use_grounding = use_grounding
+        self.use_utility = use_utility
+        self.use_seqscore = use_seqscore
+        self.ignore_cont = ignore_cont
+        self.mode = mode
+        self.closed = self.task in ['fever','arc_c']
+        tokenizer = AutoTokenizer.from_pretrained(config['generator_model_path'], padding_side="left")
+        self.ret_tokens, self.rel_tokens, self.grd_tokens, self.ut_tokens = self.load_special_tokens(
+            tokenizer, use_grounding = use_grounding, use_utility = use_utility)
+
+
+    def load_special_tokens(self, tokenizer, use_grounding, use_utility):
+        ret_tokens = {token: tokenizer.convert_tokens_to_ids(
+            token) for token in self.retrieval_tokens_names}
+        rel_tokens = {}
+        for token in ["[Irrelevant]", "[Relevant]"]:
+            rel_tokens[token] = tokenizer.convert_tokens_to_ids(token)
+
+        grd_tokens = None
+        if use_grounding is True:
+            grd_tokens = {}
+            for token in self.ground_tokens_names:
+                grd_tokens[token] = tokenizer.convert_tokens_to_ids(token)
+
+        ut_tokens = None
+        if use_utility is True:
+            ut_tokens = {}
+            for token in self.utility_tokens_names:
+                ut_tokens[token] = tokenizer.convert_tokens_to_ids(token)
+
+        return ret_tokens, rel_tokens, grd_tokens, ut_tokens
+
+    def judge_retrieve(self, input_prompts):
+        """Calculate whether a retrieve is required based on the output probability of 
+        the special token in the model"""
+
+        if self.mode != "always_retrieve":
+            # result for total batch
+            all_pred_token_ids = []
+            all_pred_text = []
+            all_pred_log_probs = []
+            preds = self.generator.generate(input_prompts, return_raw_output=True, logprobs=32016)
+            for single_pred in preds:
+                pred_token_ids = single_pred.outputs[0].token_ids
+                pred_text = single_pred.outputs[0].text
+                pred_log_probs = single_pred.outputs[0].logprobs
+                all_pred_token_ids.append(pred_token_ids)
+                all_pred_text.append(pred_text)
+                all_pred_log_probs.append(pred_log_probs)
+
+        if self.mode == "always_retrieve":
+            retrieval_flags = [True] * len(input_prompts)
+
+        elif self.mode == "no_retrieval":
+            retrieval_flags = [False] * len(input_prompts)
+
+        else:
+            retrieval_flags = []
+            for idx, single_pred in enumerate(preds):
+                if self.threshold is not None:
+                    score_dict = {}
+                    for tok, tok_id in self.ret_tokens.items():
+                        if tok_id not in all_pred_log_probs[idx][0]:
+                            score_dict[tok] = -100
+                        prob = all_pred_log_probs[idx][0][tok_id].logprob
+                        score_dict[tok] = float(prob)
+                    do_retrieve = score_dict["[Retrieval]"] / (
+                        score_dict["[Retrieval]"] + score_dict["[No Retrieval]"]) > self.threshold
+                else:
+                    do_retrieve = "[Retrieval]" in all_pred_text[idx]
+
+                retrieval_flags.append(do_retrieve)
+
+        return retrieval_flags
+
+    def critic_preds(self, preds):
+        """Evaluate predictions using different retrieval docs"""
+
+        relevance_score_dict = {}
+        grd_score_dict = {}
+        ut_score_dict = {}
+        overall_scores = {}
+        results = {}
+        for p_idx, pred in enumerate(preds):
+            pred_token_ids = pred.outputs[0].token_ids
+            pred_text = pred.outputs[0].text
+            pred_log_probs = pred.outputs[0].logprobs
+            seq_score = pred.outputs[0].cumulative_logprob / \
+                max(len(pred.outputs[0].token_ids), 1)
+
+            relevance_score_dict.setdefault(p_idx, {})
+            grd_score_dict.setdefault(p_idx, {})
+            ut_score_dict.setdefault(p_idx, {})
+            # Compute reward scores
+            for tok, id in self.rel_tokens.items():
+                prob = pred_log_probs[0][id].logprob if id in pred_log_probs[0] else -100
+                relevance_score_dict[p_idx][tok] = np.exp(float(prob))
+
+            if self.grd_tokens is not None:
+                groundness_token_appear_indices = []
+                for tok_idx, tok in enumerate(pred_token_ids):
+                    if tok in list(self.grd_tokens.values()):
+                        groundness_token_appear_indices.append(tok_idx)
+                        break
+                if len(groundness_token_appear_indices) > 0:
+                    idx = groundness_token_appear_indices[0]
+                    for token, token_id in self.grd_tokens.items():
+                        prob = pred_log_probs[idx][token_id].logprob if token_id in pred_log_probs[idx] else -100
+                        grd_score_dict[p_idx][token] = np.exp(float(prob))
+
+            if self.ut_tokens is not None:
+                utility_token_appear_indices = []
+                for tok_idx, tok in enumerate(pred_token_ids):
+                    if tok in list(self.ut_tokens.values()):
+                        utility_token_appear_indices.append(tok_idx)
+                if len(utility_token_appear_indices) > 0:
+                    idx = utility_token_appear_indices[0]
+                    for token, token_id in self.ut_tokens.items():
+                        prob = pred_log_probs[idx][token_id].logprob if token_id in pred_log_probs[idx] else -100
+                        ut_score_dict[p_idx][token] = np.exp(float(prob))
+
+            relevance_score = relevance_score_dict[p_idx]["[Relevant]"] / (
+                np.sum(list(relevance_score_dict[p_idx].values())))
+
+            if len(grd_score_dict[p_idx]) == 3:
+                gt_sum = np.sum(list(grd_score_dict[p_idx].values()))
+                ground_score = (grd_score_dict[p_idx]["[Fully supported]"] / gt_sum) + 0.5 * (
+                    grd_score_dict[p_idx]["[Partially supported]"] / gt_sum)
+            else:
+                ground_score = 0.0
+
+            if len(ut_score_dict[p_idx]) == 5:
+                ut_sum = np.sum(list(ut_score_dict[p_idx].values()))
+                ut_scores = [-1, -0.5, 0, 0.5, 1]
+                utility_score = np.sum(
+                    [ut_scores[i] * (ut_score_dict[p_idx]["[Utility:{}]".format(i+1)] / ut_sum) for i in range(len(ut_scores))])
+            else:
+                utility_score = 0.0
+
+            if self.use_seqscore is True:
+                final_score = np.exp(seq_score) + self.w_rel * relevance_score + \
+                    self.w_sup * ground_score + self.w_use * utility_score
+            else:
+                final_score = self.w_rel * relevance_score + \
+                    self.w_sup * ground_score + self.w_use * utility_score
+
+            overall_scores[p_idx] = {"final_score": final_score,
+                                     "relevance_score": relevance_score,
+                                     "ground_score": ground_score,
+                                     "utility_score": utility_score,
+                                     "relevance_score_dict": relevance_score_dict,
+                                     "grd_score_dict": grd_score_dict,
+                                     "ut_score_dict": utility_score}
+            results["retrieval_{}".format(p_idx)] = {
+                "pred": pred_text, "score": final_score}
+
+        # modify and add do retrieve tokens (only used in long-form generation)
+        final_preds =[]
+        if "[No Retrieval]" in pred_text:
+            ret_token_appear_indices = []
+            substrings = pred_text.split("[No Retrieval]")
+
+            for tok_idx, tok in enumerate(pred_token_ids):
+                if tok == self.ret_tokens["[No Retrieval]"]:
+                    ret_token_appear_indices.append(tok_idx)
+
+            ret_token_score_dict = {}
+            retrieval_remap = {}
+            for order, idx in enumerate(ret_token_appear_indices):
+                ret_token_score_dict.setdefault(order, {})
+                for tok, tok_id in self.ret_tokens.items():
+                    prob = pred_log_probs[idx][tok_id].logprob if tok_id in pred_log_probs[idx] else -100
+                    ret_token_score_dict[order][tok] = np.exp(prob)
+                if ret_token_score_dict[order]["[Retrieval]"] + ret_token_score_dict[order]["[No Retrieval]"] != 0.0:
+                    do_retrieve = (ret_token_score_dict[order]["[Retrieval]"] + ret_token_score_dict[order]["[Continue to Use Evidence]"]) / (
+                        ret_token_score_dict[order]["[Retrieval]"] + ret_token_score_dict[order]["[No Retrieval]"]) > self.threshold
+                else:
+                    do_retrieve = 0.0
+                if do_retrieve > self.threshold:
+                    retrieval_remap[order] = True
+                else:
+                    retrieval_remap[order] = False
+            processed_pred = ""
+            for substr_i, substring in enumerate(substrings):
+                if substr_i in retrieval_remap and retrieval_remap[substr_i] is True:
+                    processed_pred += substring + "[Retrieval]"
+                else:
+                    processed_pred += substring + "[No Retrieval]"
+            pred_text = processed_pred
+            final_preds.append(pred_text)
+        else:
+            final_preds.append(pred_text)
+
+        scores = [overall_scores[p_idx]["final_score"] for p_idx in overall_scores]
+
+        return results, final_preds, scores, overall_scores
+
+
+    def postprocess_prediction(self, pred):
+        def fix_spacing(input_text):
+            # Add a space after periods that lack whitespace
+            output_text = re.sub(r'(?<=\w)([.!?])(?=\w)', r'\1 ', input_text)
+            return output_text
+
+        for token in self.control_tokens:
+            pred = pred.replace(token, "")
+        if "</s>" in pred:
+            pred = pred.replace("</s>", "")
+        if "\n" in pred:
+            pred = pred.replace("\n", "")
+        if "<|endoftext|>" in pred:
+            pred = pred.replace("<|endoftext|>", "")
+
+        pred = pred.strip()
+        if type(pred) is str and pred[0] == "#" or pred[0] == ":":
+            pred = pred[1:]
+        if len(pred) == 0:
+
+            return ""
+
+        return fix_spacing(pred)
+
+
+    def select_best_prediction(self, results):
+        answer2score = {}
+        if self.closed is True:
+            for key, result in results.items():
+                answer = self.postprocess_prediction(result["pred"])
+                score = result["score"]
+                answer2score.setdefault(answer, 0)
+                answer2score[answer] += score
+            sorted_answers = sorted(
+                answer2score.items(), key=lambda x: x[1], reverse=True)
+            best_pred = sorted_answers[0][0]
+        else:
+            path2score = {key: item["score"] for key,
+                          item in results.items() if key != "no_retrieval"}
+            best_path = sorted(path2score.items(),
+                               key=lambda x: x[1], reverse=True)[0][0]
+            best_pred = results[best_path]["pred"]
+
+        return best_pred
+
+
+    def run(self, dataset, align_data, do_eval=True, batch_size=1):
+        all_dataset_list = []
+        align_answer_list = []
+
+        for i, batch_dataset in tqdm(enumerate(get_batch_dataset(dataset, batch_size=batch_size)), desc='Batch dataset: '):
+            # if i == 4: 
+            #     assert batch_dataset.question[0] == align_data[i]['question'], "query is mismatched"
+
+            #     # print()
+            #     # print(batch_dataset.question[0])
+            #     # print(batch_dataset.golden_answers)
+
+            #     evidence = align_data[i]['ctxs'][:self.retriever_topk]
+            #     align_answer_list.append(align_data[i]['answers'])
+
+            #     # batch_dataset.update_output('golden_answers', [align_data[i]['answers']])
+
+            #     batch_dataset = self.run_batch_pred(batch_dataset, evidence)
+            #     all_dataset_list.append(batch_dataset)
+
+            evidence = align_data[i]['ctxs'][:self.retriever_topk]
+            align_answer_list.append(align_data[i]['answers'])
+            batch_dataset = self.run_batch_pred(batch_dataset, evidence)
+            all_dataset_list.append(batch_dataset)
+            if i == 31:
+                break
+
+        dataset = merge_batch_dataset(all_dataset_list)
+
+        # dataset = self.evaluate(dataset, do_eval=do_eval)
+        dataset = self.evaluate2(dataset, do_eval=do_eval, golden_answers=align_answer_list)
+
+        return dataset
+
+    def run_batch_pred(self, dataset, evidence):
+        questions = dataset.question
+        # retrieval_results = self.retriever.batch_search(questions)
+        # dataset.update_output('retrieval_result', retrieval_results)
+
+        #input_prompts = self.build_prompt(questions)
+        input_prompts = [self.prompt_template.get_string(question=q) for q in questions]
+        dataset.update_output('retrieval_judge_prompt', input_prompts)
+
+        # determine whether to retrieve
+        retrieval_flags = self.judge_retrieve(input_prompts)
+        dataset.update_output('retrieval_flag', retrieval_flags)
+        # dataset.update_output('retrieval_result', retrieval_results)
+
+        # process input item based on whether to retrieve
+        all_input_list = []
+        for idx, (prompt,item) in enumerate(zip(input_prompts, dataset)):
+            retrieval_flag = retrieval_flags[idx]
+
+            if retrieval_flag:
+                # retrieval_result = retrieval_results[idx]
+                # for each doc in retrieval result, there is a prompt as input
+
+                # prompt_list = [prompt + "[Retrieval]<paragraph>{}</paragraph>".format(para['text']) \
+                #                 for para in evidence]
+
+                prompt_list = [prompt + "[Retrieval]<paragraph>{0}\n{1}</paragraph>".format(
+                                para["title"], para["text"]) for para in evidence]
+            else:
+                prompt += "[No Retrieval]"
+                prompt_list = [prompt]
+
+            item.update_output('llm_prompt', prompt_list)
+            all_input_list += prompt_list
+
+        # batch_pred = self.generator.generate(all_input_list, return_raw_output=True, logprobs=32016)
+        batch_pred = self.generator.generate(all_input_list, return_raw_output=True, logprobs=5000)
+
+        # parse output based on retrieval flag
+        pred_idx = 0
+        pred_answer_list = []
+        for idx, (retrieval_flag,item) in enumerate(zip(retrieval_flags, dataset)):
+            if retrieval_flag:
+                # for item that need retrieval, there may have more than one prediction
+                item_pred = batch_pred[pred_idx:pred_idx+len(evidence)]
+                pred_idx += len(evidence)
+                tick = time.time()
+
+                # critic_result,_,_,_ = self.critic_preds(item_pred)
+                critic_result, final_preds, scores, overall_scores = self.critic_preds(item_pred) 
+
+                critic_time = time.time() - tick
+                item.update_output('critic_result', critic_result)
+                item.update_output('critic_time', critic_time)
+
+                # select best prediction
+                tick = time.time()
+                pred = self.select_best_prediction(critic_result)
+                select_time = time.time() - tick
+                item.update_output('select_time', select_time)
+            else:
+                item_pred = batch_pred[pred_idx:pred_idx+1][0]
+                pred_idx += 1
+                pred = item_pred.outputs[0].text
+
+            ori_pred = pred
+
+            tick = time.time()
+            pred = self.postprocess_prediction(pred)
+            postproc_time = time.time() - tick
+            item.update_output('postproc_time', postproc_time)
+            pred_answer_list.append(pred)
+
+
+        # print()
+        # print(f"{questions}")
+        # print("Outputs for each retrieval")
+        # for i, (key, result) in enumerate(critic_result.items()):
+        #     print(f'pred_{i}: {result["pred"]}')
+        #     print(f'score_{i}: {result["score"]}')
+
+
+        # print()
+        # for i, pred in enumerate(batch_pred):
+        #     print()
+        #     print(f"Retrieval document #{i}")
+        #     print("Prompt:")
+        #     print(all_input_list[i])
+        #     print("Output")
+        #     print(f"pred_{i}: {pred.outputs[0].text}")
+        #     scores = overall_scores[i]
+        #     print(f'score_{i}: {scores["final_score"]}, {scores["relevance_score"]}, {scores["ground_score"]}, {scores["utility_score"]}')
+
+
+        # print(f"pridiction: {ori_pred}")
+        print(f"pridiction: {pred_answer_list}")
+
+        dataset.update_output("pred", pred_answer_list)
+
+        return dataset
+
+
 class FLAREPipeline(BasicPipeline):
-    def __init__(
-        self,
-        config,
-        threshold=0.2,
-        look_ahead_steps=64,
-        max_generation_length=256,
-        max_iter_num=5,
-        prompt_template=None,
-    ):
+    def __init__(self, config,
+                 threshold=0.5,
+                 look_ahead_steps=64,
+                 max_generation_length=256,
+                 max_iter_num=3,
+                 prompt_template=None
+        ):
         super().__init__(config, prompt_template)
 
         self.retriever = get_retriever(config)
@@ -692,23 +1146,23 @@ class FLAREPipeline(BasicPipeline):
         self.max_generation_length = max_generation_length
         self.max_iter_num = max_iter_num
         self.look_ahead_steps = look_ahead_steps
-        self.stop_sym = list("!@#$%^&*()\n\n)(*&^%$#@!")
+        self.stop_sym = list('!@#$%^&*()\n\n)(*&^%$#@!')
 
     def get_next_sentence(self, output, scores):
         tokenizer = self.generator.tokenizer
-        text_sentences = re.split(r"(?<=[^A-Z].[.?]) +", output)
-        if isinstance(tokenizer, (PreTrainedTokenizer, PreTrainedTokenizerFast)):
+        text_sentences = re.split(r'(?<=[^A-Z].[.?]) +', output)
+        if isinstance(tokenizer, (PreTrainedTokenizer,PreTrainedTokenizerFast)):
             token_id_sentences = [tokenizer.encode(s, add_special_tokens=False) for s in text_sentences]
         else:
             token_id_sentences = [tokenizer.encode(s, allowed_special="all") for s in text_sentences]
 
-        output_ids = tokenizer.encode(output, add_special_tokens=False)
+        # output_ids = tokenizer.encode(output, add_special_tokens=False)
 
         # assert sum([len(s) for s in token_id_sentences]) == len(
         #    output_ids), "token id sentences length not equal to output ids length"
 
         first_sent_ids = token_id_sentences[0]
-        first_sent_score = scores[: len(first_sent_ids)]
+        first_sent_score = scores[:len(first_sent_ids)]
 
         return text_sentences[0], first_sent_score
 
@@ -717,63 +1171,302 @@ class FLAREPipeline(BasicPipeline):
         new_query = None
         if not judge_result:
             tokenizer = self.generator.tokenizer
-            if isinstance(tokenizer, (PreTrainedTokenizer, PreTrainedTokenizerFast)):
+            if isinstance(tokenizer, (PreTrainedTokenizer,PreTrainedTokenizerFast)):
                 sent_ids = tokenizer.encode(sent, add_special_tokens=False)
             else:
                 sent_ids = tokenizer.encode(sent, allowed_special="all")
             # assert len(sent_ids) == len(sent_score)
-            new_query_ids = [i for i, score in zip(sent_ids, sent_score) if score > self.threshold]
+            new_query_ids = [i for i,score in zip(sent_ids,sent_score) if score > self.threshold]
             new_query = tokenizer.decode(new_query_ids)
-            if len(new_query) == 0:
-                judge_result = True
         return judge_result, new_query
 
     def run_item(self, item):
         question = item.question
         gen_length = 0
         iter_round = 0
+        # judge_sent_time = 0
         final_gen_result = ""
+        print()
+        print(question)
         while gen_length < self.max_generation_length and iter_round < self.max_iter_num:
-            input_prompt = self.prompt_template.get_string(question=question, previous_gen=final_gen_result)
+            input_prompt = [self.prompt_template.get_string(
+                question=question, previous_gen=final_gen_result)]
+            item.update_output(f'forward_llm_prompt_iter{iter_round}', input_prompt[0])
 
-            # input_prompt = self.build_prompt(
-            #     question_list=[question], use_reference=False, previous_gen=final_gen_result)[0]
-            # scores: token logits of the whole generation seq
+            print("Iter: ", iter_round)
+
+            # round_gen_output, scores = self.generator.generate(
+            #     [input_prompt], return_scores=True, stop=self.stop_sym, max_new_tokens=self.look_ahead_steps)
             round_gen_output, scores = self.generator.generate(
-                input_prompt, return_scores=True, stop=self.stop_sym, max_new_tokens=self.look_ahead_steps
-            )
+                input_prompt, return_scores=True, max_new_tokens=self.look_ahead_steps)
+            item.update_output(f'forward_llm_gen_iter{iter_round}', round_gen_output[0])
+            # print(round_gen_output)
+            # print(scores)
+
             round_gen_output, scores = round_gen_output[0], scores[0]
+            print("round_gen_output", round_gen_output)
+            # print(scores)
             # next_sent_scores: token logits of the first sent in generation seq
+            t0 = time.time()
             next_sent, next_sent_score = self.get_next_sentence(round_gen_output, scores)
+            print("next_sent", next_sent)
+            print("next_sent_score", next_sent_score)
+            
             # judge next sentence
             judge_result, query = self.judge_sent_confidence(next_sent, next_sent_score)
-            item.update_output(f"judge_result_iter{iter_round}", judge_result)
+            judge_sent_time = time.time() - t0
+            item.update_output(f'judge_sentence_time_iter{iter_round}', judge_sent_time)
+            item.update_output(f'judge_result_iter{iter_round}', judge_result)
+            print()
+            print("Judge result: ", judge_result)
+            print("Retrieval Query: ", query)
+            # print(query)
 
             if not judge_result:
                 # do retrieval-augmented generation
-                retrieval_result = self.retriever.search(query)
-                item.update_output("retrieval_result", retrieval_result)
-                input_prompt = self.prompt_template.get_string(
-                    question=question, retrieval_result=retrieval_result, previous_gen=final_gen_result
-                )
+                # retrieval_result = self.retriever.search(query)[0]
+                item.update_output(f'retrieval_query_iter{iter_round}', query)
 
-                # input_prompt = self.build_prompt(
-                #     question_list = [question],
-                #     retrieval_results = [retrieval_result],
-                #     previous_gen = final_gen_result)[0]
+                retrieval_result = self.retriever.search(query)
+                item.update_output(f'retrieval_result_iter{iter_round}', retrieval_result)
+
+                input_prompt = [self.prompt_template.get_string(
+                    question=question, retrieval_result=retrieval_result, previous_gen=final_gen_result)]
+                item.update_output(f'llm_gen_prompt_iter{iter_round}', input_prompt[0])
+
+                # output, scores = self.generator.generate(
+                #     input_prompt, return_scores=True, stop=self.stop_sym, max_new_tokens=self.look_ahead_steps)
                 output, scores = self.generator.generate(
-                    input_prompt, return_scores=True, stop=self.stop_sym, max_new_tokens=self.look_ahead_steps
-                )
+                    input_prompt, return_scores=True, max_new_tokens=self.look_ahead_steps)
                 output, scores = output[0], scores[0]
                 next_sent, _ = self.get_next_sentence(output, scores)
-                item.update_output(f"gen_iter_{iter_round}", next_sent)
-                item.update_output("retrieval_result", retrieval_result)
+                item.update_output(f'llm_gen_iter_{iter_round}', output)
+                # item.update_output('retrieval_query', query)
+                # item.update_output('retrieval_result', retrieval_result)
 
-            final_gen_result += next_sent
+            # final_gen_result += next_sent
+            final_gen_result = next_sent
             gen_length += len(next_sent_score)
             iter_round += 1
 
-        item.update_output("pred", final_gen_result)
+            # print()
+            # print("next_sent", next_sent)
+            print()
+            print("final_gen_result", final_gen_result)
+
+        avg_judge_t = judge_sent_time / iter_round
+        item.update_output('pred', final_gen_result)
+        # item.update_output('avg_judge_t', avg_judge_t)
+
+
+    def run(self, dataset, do_eval=True, pred_process_fun=None):
+        for item in tqdm(dataset, desc="Inference: "):
+            self.run_item(item)
+
+        dataset = self.evaluate(dataset, do_eval=do_eval, pred_process_fun=pred_process_fun)
+        return dataset
+
+
+class FLAREPipeline2(BasicPipeline):
+    def __init__(self, config,
+                 # threshold=0.5,
+                 look_ahead_steps=32,
+                 max_generation_length=256,
+                 max_iter_num=4,
+                 min_prob=0.6,
+                 min_token_gap=5,
+                 num_pad_tokens=2,
+                 prompt_template=None,
+        ):
+        super().__init__(config, prompt_template)
+
+        self.retriever = get_retriever(config)
+        self.generator = get_generator(config)
+        self.max_generation_length = max_generation_length
+        self.max_iter_num = max_iter_num
+        self.look_ahead_steps = look_ahead_steps
+        self.max_gen_question_num = 3
+        # self.stop_sym = list('!@#$%^&*()\n\n)(*&^%$#@!')
+
+        self.min_prob = min_prob
+        self.min_token_gap = min_token_gap
+        self.num_pad_tokens = num_pad_tokens
+    
+        self.finished_value = "FINISHED"
+
+        from flashrag.prompt import PromptTemplate
+        from flashrag.prompt import FLARE_PROMPT_TEMPLATE, FLARE_QUESTION_GENERATOR_PROMPT_TEMPLATE
+
+        self.prompt_template = PromptTemplate(
+            config = config,
+            system_prompt =  FLARE_PROMPT_TEMPLATE
+        )
+
+
+        self.question_gen_template = PromptTemplate(
+            config = config,
+            system_prompt=FLARE_QUESTION_GENERATOR_PROMPT_TEMPLATE
+        )
+
+    def generate_tokens_and_log_probs(self, input):
+        output, scores, tokens = self.generator.generate(
+                input, return_scores=True, return_tokens=True, 
+                max_tokens=self.look_ahead_steps
+        )
+        return tokens, scores
+
+    def get_low_confidence_spans(
+            self,
+            tokens,
+            scores,
+            min_prob: float,
+            min_token_gap: int,
+            num_pad_tokens: int,
+        ):
+        _low_idx = np.where(scores < min_prob)[0]
+        low_idx = [i for i in _low_idx if re.search(r"\w", tokens[i])]
+        if len(low_idx) == 0:
+            return []
+        spans = [[low_idx[0], low_idx[0] + num_pad_tokens + 1]]
+        for i, idx in enumerate(low_idx[1:]):
+            end = idx + num_pad_tokens + 1
+            if idx - low_idx[i] < min_token_gap:
+                spans[-1][1] = end
+            else:
+                spans.append([idx, end])
+        return ["".join(tokens[start:end]) for start, end in spans]
+    
+    def parse_output(self, text: str):
+        cleaned = text.strip()
+        finished = self.finished_value in cleaned
+        return cleaned.replace(self.finished_value, ""), finished
+
+    def merge_retrieval(self, retrieval_array):
+        merge_results = []
+        doc_ids = []
+        for results in retrieval_array:
+            for doc in results:
+                doc_id = doc["id"]
+                # remove duplicated docs
+                if doc_id not in doc_ids:
+                    doc_ids.append(doc_id)
+                    merge_results.append(doc)
+
+        return merge_results
+    
+    def do_retrieval(
+            self,
+            low_confidence_spans,
+            user_input: str,
+            response: str,
+            initial_response: str,
+            item,
+            iter_num = 0
+        ):
+
+        _response = response.strip() + self.parse_output(initial_response)[0]
+        question_gen_inputs = [
+            {
+                "user_input": user_input,
+                # "current_response": initial_response,
+                "current_response": _response,
+                "uncertain_span": span,
+            }
+            for span in low_confidence_spans
+        ]
+
+        question_gen_inputs = question_gen_inputs[:self.max_gen_question_num]
+
+        question_gen_prompts = []
+        generated_questions = []
+        for question_dict in question_gen_inputs:
+            question_gen_prompt = self.question_gen_template.get_string(
+                question=question_dict['user_input'],
+                previous_gen=question_dict['current_response'],
+                uncertain_span=question_dict['uncertain_span'],
+            )
+
+            generation_result = self.generator.generate(question_gen_prompt)
+            question_gen_prompts.append(question_gen_prompt[0])
+            generated_questions.append(generation_result[0])
+
+        item.update_output(f'quention_gen_prompts_iter_{iter_num}', question_gen_prompts)
+        item.update_output(f'generated_retrieval_queries_iter_{iter_num}', generated_questions)
+
+        retrieval_results = self.retriever.batch_search(generated_questions)
+        retrieval_results = self.merge_retrieval(retrieval_results)
+
+        return retrieval_results
+
+    def run_item(self, item):
+        question = item.question
+
+        response = ""
+        # self.max_iter = 5
+
+        retrieval_results = None
+        for iter in range(self.max_iter_num):
+            input_prompt = self.prompt_template.get_string(
+                question=question, retrieval_result=retrieval_results, 
+                previous_gen=response
+            )
+
+            item.update_output(f'forward_llm_prompt_iter_{iter}', input_prompt[0])
+            tokens, log_probs = self.generate_tokens_and_log_probs(input_prompt)
+            item.update_output(f'forward_llm_gen_iter_{iter}', "".join(tokens[0]))
+
+            low_confidence_spans = self.get_low_confidence_spans(
+                tokens[0],
+                log_probs[0],
+                self.min_prob, 
+                self.min_token_gap,
+                self.num_pad_tokens,
+            )
+
+            initial_response = response.strip() + " " + "".join(tokens[0])
+
+            if not low_confidence_spans:
+                item.update_output(f'retrieval_flag_iter_{iter}', False)
+                response = initial_response
+                response, finished = self.parse_output(response)
+                item.update_output(f'response_iter_{iter}', response)
+
+                if finished:
+                    break
+                else:
+                    continue
+
+            item.update_output(f'low_confidence_spans_iter_{iter}', low_confidence_spans)
+            item.update_output(f'retrieval_flag_iter_{iter}', True)
+
+            retrieval_results = self.do_retrieval(
+                low_confidence_spans,
+                question,
+                response,
+                initial_response,
+                item,
+                iter_num=iter,
+            )
+            item.update_output(f'retrieval_results_iter_{iter}', retrieval_results)
+
+            llm_prompt = self.prompt_template.get_string(
+                question=question, retrieval_result=retrieval_results, 
+                previous_gen=response
+            )
+            item.update_output(f'llm_prompt_iter_{iter}', llm_prompt[0])
+
+            new_response = self.generator.generate(llm_prompt)
+            item.update_output(f'llm_reponse_iter_{iter}', new_response[0])
+
+            marginal, finished = self.parse_output(new_response[0])
+            response = response.strip() + " " + marginal
+
+            if finished:
+                break
+
+        item.update_output('total_iter', iter)
+        item.update_output('pred', response)
+        return
 
     def run(self, dataset, do_eval=True, pred_process_fun=None):
         for item in tqdm(dataset, desc="Inference: "):
@@ -788,8 +1481,7 @@ class SelfAskPipeline(BasicPipeline):
 
     def __init__(self, config, prompt_template=None, max_iter=5, single_hop=True):
         super().__init__(config, prompt_template)
-        from flashrag.prompt.selfask_examplars import SELF_ASK_PROMPT_SINGLE_HOP, SELF_ASK_PROMPT_MULTI_HOP
-
+        from flashrag.utils import SELF_ASK_PROMPT_SINGLE_HOP, SELF_ASK_PROMPT_MULTI_HOP
         self.retriever = get_retriever(config)
         self.generator = get_generator(config)
 
@@ -798,9 +1490,9 @@ class SelfAskPipeline(BasicPipeline):
         self.P_INS = SELF_ASK_PROMPT_SINGLE_HOP if self.single_hop else SELF_ASK_PROMPT_MULTI_HOP
 
     def format_reference(self, retrieval_result):
-        format_reference = ""
+        format_reference = ''
         for idx, doc_item in enumerate(retrieval_result):
-            content = doc_item["contents"]
+            content = doc_item['contents']
             title = content.split("\n")[0]
             text = "\n".join(content.split("\n")[1:])
             format_reference += f"Context{idx+1}: {text}\n"
@@ -808,11 +1500,11 @@ class SelfAskPipeline(BasicPipeline):
         return format_reference
 
     def _remove_duplicate_doc(self, docs):
-        assert all(["id" in doc for doc in docs])
+        assert all(['id' in doc for doc in docs])
         new_doc_list = []
         exist_ids = []
         for doc in docs:
-            doc_id = doc["id"]
+            doc_id = doc['id']
             if doc_id not in exist_ids:
                 exist_ids.append(doc_id)
                 new_doc_list.append(doc)
@@ -838,7 +1530,7 @@ class SelfAskPipeline(BasicPipeline):
                 + res
             )
             gen_out = self.generator.generate(input_prompt, stop=["Context:", "#", stop_condition])[0]
-            item.update_output(f"intermediate_output_iter{idx}", gen_out)
+            item.update_output(f'intermediate_output_iter{idx}', gen_out)
 
             if stop_condition == "Intermediate answer:":
                 res += gen_out.split("Intermediate answer:")[0]
@@ -850,7 +1542,7 @@ class SelfAskPipeline(BasicPipeline):
 
                 if len(followup_split) > 1:
                     res += re.findall(self.FOLLOW_UP_PATTERN, gen_out)[0]
-                stop_condition = "Intermediate answer:"
+                stop_condition = 'Intermediate answer:'
 
             # make sure the result does not end in a new line
             if len(res) == 0:
@@ -861,7 +1553,9 @@ class SelfAskPipeline(BasicPipeline):
 
             if "Follow up: " in gen_out:
                 # get the first follow up
-                new_query = [l for l in gen_out.split("\n") if "Follow up: " in l][0].split("Follow up: ")[-1]
+                new_query = [l for l in gen_out.split("\n") if "Follow up: " in l][
+                    0
+                ].split("Follow up: ")[-1]
                 retrieval_result = self.retriever.search(new_query)
 
             if "So the final answer is: " in gen_out:
@@ -885,93 +1579,251 @@ class SelfAskPipeline(BasicPipeline):
                 + follow_ups
                 + "\n"
                 + res
-            )
-
-        item.update_output("retrieval_result", retrieval_result)
-        item.update_output("pred", res)
-
-    def run(self, dataset, do_eval=True, pred_process_fun=selfask_pred_parse):
-        for item in tqdm(dataset, desc="Inference: "):
-            self.run_item(item)
-
-        dataset = self.evaluate(dataset, do_eval=do_eval, pred_process_fun=pred_process_fun)
-        return dataset
-
-
-class IRCOTPipeline(BasicPipeline):
-    IRCOT_INSTRUCTION = 'You serve as an intelligent assistant, adept at facilitating users through complex, multi-hop reasoning across multiple documents. This task is illustrated through demonstrations, each consisting of a document set paired with a relevant question and its multi-hop reasoning thoughts. Your task is to generate one thought for current step, DON\'T generate the whole thoughts at once! If you reach what you believe to be the final step, start with "So the answer is:".'
-    IRCOT_EXAMPLE = "Wikipedia Title: Kurram Garhi\nKurram Garhi is a small village located near the city of Bannu, which is the part of Khyber Pakhtunkhwa province of Pakistan. Its population is approximately 35000. Barren hills are near this village. This village is on the border of Kurram Agency. Other nearby villages are Peppal, Surwangi and Amandi Kala.\n\nWikipedia Title: 2001–02 UEFA Champions League second group stage\nEight winners and eight runners- up from the first group stage were drawn into four groups of four teams, each containing two group winners and two runners- up. Teams from the same country or from the same first round group could not be drawn together. The top two teams in each group advanced to the quarter- finals.\n\nWikipedia Title: Satellite tournament\nA satellite tournament is either a minor tournament or event on a competitive sporting tour or one of a group of such tournaments that form a series played in the same country or region.\n\nWikipedia Title: Trojkrsti\nTrojkrsti is a village in Municipality of Prilep, Republic of Macedonia.\n\nWikipedia Title: Telephone numbers in Ascension Island\nCountry Code:+ 247< br> International Call Prefix: 00 Ascension Island does not share the same country code( +290) with the rest of St Helena.\n\nQuestion: Are both Kurram Garhi and Trojkrsti located in the same country?\nThought: Kurram Garhi is located in the country of Pakistan. Trojkrsti is located in the country of Republic of Macedonia. Thus, they are not in the same country. So the answer is: no.\n\n"
-
-    def __init__(self, config, prompt_template=None, retriever=None, generator=None, max_iter=2):
-        # if not provide prompt template, use default template provided by IRCOT
-        if prompt_template is None:
-            prompt_template = PromptTemplate(
-                config=config,
-                system_prompt=f"{self.IRCOT_INSTRUCTION}\n\n{self.IRCOT_EXAMPLE}",
-                user_prompt="{reference}Question: {question}\nThought:",
-                reference_template="Wikipedia Title: {title}\n{text}\n\n",
-                enable_chat=False,
-            )
-
-        super().__init__(config, prompt_template)
-        self.retriever = get_retriever(config) if retriever is None else retriever
-        self.generator = get_generator(config) if generator is None else generator
-        self.max_iter = max_iter
-
-    def run_item(self, item):
-        question = item.question
-        retrieval_result, scores = self.retriever.search(question, return_score=True)
-        doc2score = {doc_item["id"]: score for doc_item, score in zip(retrieval_result, scores)}
-        id2doc = {doc_item["id"]: doc_item for doc_item in retrieval_result}
-
-        thoughts = []
-        iter_num = 0
-        while iter_num < self.max_iter:
-            input_prompt = self.prompt_template.get_string(
-                question=question, retrieval_result=retrieval_result, previous_gen=" ".join(thoughts)
-            )
-            new_thought = self.generator.generate(input_prompt)[0]
-            thoughts.append(new_thought)
-            iter_num += 1
-            if "So the answer is:" in new_thought:
-                item.update_output(
-                    f"intermediate_output_iter{iter_num}",
-                    {
-                        "input_prompt": input_prompt,
-                        "new_thought": new_thought,
-                    },
                 )
-                break
 
-            # retrieve new docs and merge
-            new_retrieval_result, new_scores = self.retriever.search(new_thought, return_score=True)
-            for doc_item, score in zip(new_retrieval_result, new_scores):
-                id2doc[doc_item["id"]] = doc_item
-                doc_id = doc_item["id"]
-                if doc_id in doc2score:
-                    doc2score[doc_id] = max(doc2score[doc_id], score)
-                else:
-                    doc2score[doc_id] = score
-            sorted_doc_score = sorted(doc2score.items(), key=lambda x: x[1], reverse=False)
-            sorted_doc_id = [t[0] for t in sorted_doc_score]
-            retrieval_result = [id2doc[id] for id in sorted_doc_id]
+        item.update_output('retrieval_result', retrieval_result)
+        item.update_output('pred', res)
 
-            item.update_output(
-                f"intermediate_output_iter{iter_num}",
-                {
-                    "input_prompt": input_prompt,
-                    "new_thought": new_thought,
-                    "new_retreival_result": new_retrieval_result,
-                },
-            )
-
-        item.update_output("retrieval_result", retrieval_result)
-        item.update_output("pred", " ".join(thoughts))
-        return item
-
-    def run(self, dataset, do_eval=True, pred_process_fun=ircot_pred_parse):
-        for item in tqdm(dataset, desc="Inference: "):
+    def run(self, dataset, do_eval=True, pred_process_fun=None):
+        for item in tqdm(dataset, desc='Inference: '):
             self.run_item(item)
 
         dataset = self.evaluate(dataset, do_eval=do_eval, pred_process_fun=pred_process_fun)
         return dataset
+
+
+
+#     def run(self, dataset, do_eval=True, pred_process_fun=None):
+#         questions = dataset.question
+#         retrieval_results = self.retriever.batch_search(questions)
+#         num_tasks = len(questions)
+# 
+#         # run in batch
+#         past_generation_results = [] # list of N items
+#         finished_tasks = []
+#         finished_retrieval_results = []
+#         finished_generation_results = []
+#         for iter_idx in range(self.iter_num):
+#             print(iter_idx)
+#             if iter_idx == 0:
+#                 past_retrieval_results = retrieval_results
+#                 past_generation_results = None
+#             else:
+#                 questions = dataset.question
+#                 # past_retrieval_results = retrieval_results
+#                 assert len(questions) == len(past_generation_results)
+#             assert len(questions) == len(past_retrieval_results)
+#             
+#             dataset.update_output(f'original_retrieval_query_iter_{iter_idx}', questions)
+#             dataset.update_output(f'original_retrieval_results_iter_{iter_idx}', retrieval_results)
+# 
+#             step_decompose_retrieval_query = self.step_decompose_query_transform(
+#                 input_query=questions, 
+#                 retrieval_results=past_retrieval_results, 
+#                 previous_gen=past_generation_results
+#             )
+#             dataset.update_output(f'step_decompose_retrieval_query_iter_{iter_idx}', questions)
+# 
+#             retrieval_results = self.retriever.batch_search(step_decompose_retrieval_query)
+#             dataset.update_output(f'step_decompose_retrieval_results_iter_{iter_idx}', retrieval_results)
+# 
+#             input_prompts = [self.prompt_template.get_string(
+#                 question=q, retrieval_result=r) for q,r in zip(questions, retrieval_results)]
+# 
+#             dataset.update_output(f'prompt_iter_{iter_idx}', input_prompts)
+# 
+#             generation_results = self.generator.generate(input_prompts)
+# 
+#             dataset.update_output(f'pred_iter_{iter_idx}', generation_results)
+# 
+#             judge_prompts = [
+#                 self.judge_prompt_template.get_string(question=q, answer_str=ans) 
+#                 for q, ans in zip(questions, generation_results)
+#             ]
+# 
+#             dataset.update_output(f'judge_prompt_iter_{iter_idx}', judge_prompts)
+# 
+#             judge_results = self.generator.generate(judge_prompts)
+# 
+#             dataset.update_output(f'judge_results_iter_{iter_idx}', judge_results)
+# 
+#             split_flags = [j != "1" for j in judge_results]
+#             cont_dataset, finished_dataset = split_dataset(dataset, split_flags)
+# 
+#             finished_tasks.append(finished_dataset)
+#             dataset = cont_dataset
+# 
+#             past_retrieval_results = []
+#             past_generation_results = []
+#             for i, flag in enumerate(split_flags):
+#                 if flag == True:
+#                     past_retrieval_results.append(retrieval_results[i])
+#                     past_generation_results.append(generation_results[i])
+#                 else:
+#                     finished_retrieval_results.append(retrieval_results[i])
+#                     finished_generation_results.append(generation_results[i])
+#             
+#             print(len(finished_generation_results))
+#             breakpoint()
+#             if len(finished_generation_results) == num_tasks:
+#                 break
+# 
+#         finished_tasks.append(cont_dataset)
+#         dataset = self.merge_dataset(finished_tasks)
+# 
+#         for i in range(len(past_retrieval_results)):
+#             finished_retrieval_results.append(past_retrieval_results[i])
+#             finished_generation_results.append(past_generation_results[i])
+# 
+#         # use last retrieval result for evaluation
+#         dataset.update_output("retrieval_result", finished_retrieval_results)
+#         dataset.update_output("pred", finished_generation_results)
+#         dataset = self.evaluate(dataset, do_eval=do_eval, pred_process_fun=pred_process_fun)
+# 
+#         return dataset
+
+#     def run_item_v0(self, item):
+#         question = item.question
+#         retrieval_results = self.retriever.search(question)
+# 
+#         # past_generation_results = [] # list of N items
+#         for iter_idx in range(self.iter_num):
+#             if iter_idx == 0:
+#                 past_retrieval_results = retrieval_results
+#                 past_generation_result = None
+#             else:
+#                 past_generation_result = generation_result
+#             
+#             item.update_output(f'original_retrieval_query_iter_{iter_idx}', question)
+#             item.update_output(f'original_retrieval_results_iter_{iter_idx}', retrieval_results)
+# 
+#             step_decompose_retrieval_query = self.step_decompose_query_transform(
+#                 item, iter_idx, question, 
+#                 past_retrieval_results, past_generation_result
+#             )
+#             item.update_output(
+#                 f'step_decomposed_retrieval_query_iter_{iter_idx}', 
+#                 step_decompose_retrieval_query[0]                    
+#             )
+# 
+#             retrieval_results = self.retriever.search(step_decompose_retrieval_query)
+#             item.update_output(f'step_decomposed_retrieval_results_iter_{iter_idx}', retrieval_results)
+# 
+#             input_prompt = [self.prompt_template.get_string(
+#                 question=question, retrieval_result=retrieval_results
+#             )]
+#             item.update_output(f'llm_prompt_iter_{iter_idx}', input_prompt[0])
+# 
+#             generation_result = self.generator.generate(input_prompt)
+#             item.update_output(f'llm_gen_response_iter_{iter_idx}', generation_result[0])
+# 
+#             judge_prompt = [self.judge_prompt_template.get_string(
+#                 question=question, answer_str=generation_result
+#             )]
+#             item.update_output(f'judge_prompt_iter_{iter_idx}', judge_prompt[0])
+# 
+#             judge_result = self.generator.generate(judge_prompt)[0]
+#             item.update_output(f'judge_result_iter_{iter_idx}', judge_result)
+# 
+#             if judge_result == "1":
+#                 break
+# 
+#         item.update_output('pred', generation_result[0])
+#         return
+# 
+#     def run_item_v1(self, item):
+#         question = item.question
+# 
+#         for iter_idx in range(0, self.iter_num):
+#             if iter_idx == 0:
+#                 retrieval_query = question
+#                 item.update_output(f'retrieval_query_iter_0', question)
+#             else:
+#                 retrieval_query = self.step_decompose_query_transform(
+#                     item, iter_idx, 
+#                     question, 
+#                     past_retrieval_results, 
+#                     past_generation_result
+#                 )
+#                 item.update_output(
+#                     f'step_decomposed_retrieval_query_iter_{iter_idx}', 
+#                     retrieval_query[0]                    
+#                 )
+# 
+#             retrieval_results = self.retriever.search(retrieval_query)
+#             item.update_output(f'retrieval_results_iter_{iter_idx}', retrieval_results)
+# 
+#             input_prompt = [self.prompt_template.get_string(
+#                 question=question, retrieval_result=retrieval_results
+#             )]
+#             item.update_output(f'llm_prompt_iter_{iter_idx}', input_prompt[0])
+# 
+#             generation_result = self.generator.generate(input_prompt)
+#             item.update_output(f'llm_response_iter_{iter_idx}', generation_result[0])
+# 
+#             judge_prompt = [self.judge_prompt_template.get_string(
+#                 question=question, answer_str=generation_result
+#             )]
+#             item.update_output(f'judge_prompt_iter_{iter_idx}', judge_prompt[0])
+# 
+#             judge_result = self.generator.generate(judge_prompt)[0]
+#             item.update_output(f'judge_result_iter_{iter_idx}', judge_result)
+# 
+#             past_retrieval_results = retrieval_results
+#             past_generation_result = generation_result
+# 
+#             if judge_result == "1":
+#                 break
+# 
+#         item.update_output('pred', generation_result[0])
+#         return
+# 
+#     def run_item_v2(self, item):
+#         question = item.question
+#         # retrieval_results = self.retriever.search(question)
+# 
+#         # past_generation_results = [] # list of N items
+#         for iter_idx in range(self.iter_num):
+#             if iter_idx == 0:
+#                 past_retrieval_results = None
+#                 past_generation_result = None
+#             else:
+#                 past_retrieval_results = retrieval_results
+#                 past_generation_result = generation_result
+#             
+#             # item.update_output(f'original_retrieval_query_iter_{iter_idx}', question)
+#             # item.update_output(f'original_retrieval_results_iter_{iter_idx}', retrieval_results)
+# 
+#             step_decompose_retrieval_query = self.step_decompose_query_transform(
+#                 item, iter_idx, question, 
+#                 past_retrieval_results, past_generation_result
+#             )
+#             item.update_output(
+#                 f'step_decomposed_retrieval_query_iter_{iter_idx}', 
+#                 step_decompose_retrieval_query[0]                    
+#             )
+# 
+#             retrieval_results = self.retriever.search(step_decompose_retrieval_query)
+#             item.update_output(f'step_decomposed_retrieval_results_iter_{iter_idx}', retrieval_results)
+# 
+#             input_prompt = [self.prompt_template.get_string(
+#                 question=question, retrieval_result=retrieval_results
+#             )]
+#             item.update_output(f'llm_prompt_iter_{iter_idx}', input_prompt[0])
+# 
+#             generation_result = self.generator.generate(input_prompt)
+#             item.update_output(f'llm_gen_response_iter_{iter_idx}', generation_result[0])
+# 
+#             judge_prompt = [self.judge_prompt_template.get_string(
+#                 question=question, answer_str=generation_result
+#             )]
+#             item.update_output(f'judge_prompt_iter_{iter_idx}', judge_prompt[0])
+# 
+#             judge_result = self.generator.generate(judge_prompt)[0]
+#             item.update_output(f'judge_result_iter_{iter_idx}', judge_result)
+# 
+#             if judge_result == "1":
+#                 break
+# 
+#         item.update_output('pred', generation_result[0])
+#         return

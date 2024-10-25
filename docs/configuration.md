@@ -122,7 +122,6 @@ index_path: ~ # set automatically if not provided.
 faiss_gpu: False # whether use gpu to hold index
 corpus_path: ~  # path to corpus in '.jsonl' format that store the documents
 
-use_sentence_transformer: False # If set, the retriever will be load through `sentence transformer` library
 retrieval_topk: 5 # number of retrieved documents
 retrieval_batch_size: 256  # batch size for retrieval
 retrieval_use_fp16: True  # whether to use fp16 for retrieval model
@@ -161,7 +160,7 @@ use_fid: False # whether to use FID, only valid in encoder-decoder model
 
 # -------------------------------------------------Evaluation Settings------------------------------------------------#
 # Metrics to evaluate the result
-metrics: ['em','f1','acc,'precision','recall'] 
+metrics: ['em','f1','sub_em','precision','recall'] 
 # Specify setting for metric, will be called within certain metrics
 metric_setting: 
   retrieval_recall_topk: 5
@@ -242,7 +241,6 @@ index_path: ~ # set automatically if not provided.
 faiss_gpu: False # whether use gpu to hold index
 corpus_path: ~  # path to corpus in '.jsonl' format that store the documents
 
-use_sentence_transformer: False # If set, the retriever will be load through `sentence transformer` library
 retrieval_topk: 5 # number of retrieved documents
 retrieval_batch_size: 256  # batch size for retrieval
 retrieval_use_fp16: True  # whether to use fp16 for retrieval model
@@ -270,8 +268,6 @@ FlashRAG supports saving and reusing retrieval results. When reusing, it will lo
 - `retrieval_cache_path`: Set to the path of the previously saved retrieval cache.
 
 To use a reranker, set `use_reranker` to `True` and fill in `rerank_model_name`. For Bi-Embedding type rerankers, the pooling method needs to be set, similar to the retrieval method.
-
-If set `use_sentence_transformer` to `True`, there is no need to set consider pooling method.
 
 ### Generator Settings
 
@@ -301,7 +297,7 @@ This section sets various settings used during evaluation. If you use a custom e
 
 ```yaml
 # Metrics to evaluate the result
-metrics: ['em','f1','acc','precision','recall'] 
+metrics: ['em','f1','sub_em','precision','recall'] 
 # Specify setting for metric, will be called within certain metrics
 metric_setting: 
   retrieval_recall_topk: 5

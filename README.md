@@ -3,7 +3,7 @@
 
 <div align="center">
 <a href="https://arxiv.org/abs/2405.13576" target="_blank"><img src=https://img.shields.io/badge/arXiv-b5212f.svg?logo=arxiv></a>
-<a href="https://huggingface.co/datasets/RUC-NLPIR/FlashRAG_datasets/" target="_blank"><img src=https://img.shields.io/badge/%F0%9F%A4%97%20HuggingFace%20Datasets-27b3b4.svg></a>
+<a href="https://huggingface.co/datasets/ignore/FlashRAG_datasets" target="_blank"><img src=https://img.shields.io/badge/%F0%9F%A4%97%20HuggingFace%20Datasets-27b3b4.svg></a>
 <a href="https://github.com/RUC-NLPIR/FlashRAG/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/LICENSE-MIT-green"></a>
 <a><img alt="Static Badge" src="https://img.shields.io/badge/made_with-Python-blue"></a>
 </div>
@@ -21,7 +21,7 @@
 </p>
 
 </h4>
-FlashRAG is a Python toolkit for the reproduction and development of Retrieval Augmented Generation (RAG) research. Our toolkit includes 32 pre-processed benchmark RAG datasets and 14 state-of-the-art RAG algorithms. 
+FlashRAG is a Python toolkit for the reproduction and development of Retrieval Augmented Generation (RAG) research. Our toolkit includes 32 pre-processed benchmark RAG datasets and 12 state-of-the-art RAG algorithms. 
 
 <p align="center">
 <img src="asset/framework.jpg">
@@ -39,7 +39,7 @@ With FlashRAG and provided resources, you can effortlessly reproduce existing SO
 
 - **Comprehensive Benchmark Datasets**: A collection of 32 pre-processed RAG benchmark datasets to test and validate RAG models' performances.
 
-- **Pre-implemented Advanced RAG Algorithms**: Features 14 advancing RAG algorithms with reported results, based on our framework. Easily reproducing results under different settings.
+- **Pre-implemented Advanced RAG Algorithms**: Features 12 advancing RAG algorithms with reported results, based on our framework. Easily reproducing results under different settings.
 
 - **Efficient Preprocessing Stage**: Simplifies the RAG workflow preparation by providing various scripts like corpus processing for retrieval, retrieval index building, and pre-retrieval of documents.
 
@@ -52,7 +52,7 @@ FlashRAG is still under development and there are many issues and room for impro
 - [x] Support OpenAI models
 - [ ] Support Claude and Gemini models
 - [x] Provdide instructions for each component
-- [x] Integrate sentence Transformers
+- [ ] Integrate sentence Transformers
 - [ ] Inlcude more RAG approaches
 - [ ] Add more evaluation metrics (e.g., Unieval, name-entity F1) and benchmarks (e.g., RGB benchmark)
 - [ ] Enhance code adaptability and readability
@@ -60,21 +60,9 @@ FlashRAG is still under development and there are many issues and room for impro
 
 ## :page_with_curl: Changelog
 
-[24/08/02] We add support for a new method [<u>Spring</u>](https://arxiv.org/abs/2405.19670), significantly improve the performance of LLM by adding only a few token embeddings. See it result in [<u>result table</u>](#robot-supporting-methods).
+[24/06/05] We have provided detailed document for reproducing existing methods (see [how to reproduce ](./docs/reproduce_experiment.md) and [baseline details](./docs/baseline_details.md)) and [<u>configurations settings</u>](./docs/configuration.md)
 
-[24/07/17] Due to some unknown issues with HuggingFace, our original dataset link has been invalid. We have updaded it. Please check the [new link](https://huggingface.co/datasets/RUC-NLPIR/FlashRAG_datasets/) if you encounter any problems.
-
-[24/07/06] We add support for a new method: [<u>Trace</u>](https://arxiv.org/abs/2406.11460), which refine text by constructing a knowledge graph. See it [<u>results</u>](#robot-supporting-methods) and [<u>details</u>](./docs/baseline_details.md).
-
-[24/06/19] We add support for a new method: [<u>IRCoT</u>](https://arxiv.org/abs/2212.10509), and update the [<u>result table</u>](#robot-supporting-methods).
-
-[24/06/15] We provide a [<u>demo</u>](./examples/quick_start/demo_en.py) to perform the RAG process using our toolkit.
-
-[24/06/11] We have integrated `sentence transformers` in the retriever module. Now it's easier to use the retriever without setting pooling methods.
-
-[24/06/05] We have provided detailed document for reproducing existing methods (see [how to reproduce](./docs/reproduce_experiment.md), [baseline details](./docs/baseline_details.md)), and [<u>configurations settings</u>](./docs/configuration.md).
-
-[24/06/02] We have provided an introduction of FlashRAG for beginners, see [<u>an introduction to flashrag</u>](./docs/introduction_for_beginners_en.md) ([<u>中文版</u>](./docs/introduction_for_beginners_zh.md) [<u>한국어</u>](./docs/introduction_for_beginners_kr.md)).
+[24/06/02] We have provided an introduction of FlashRAG for beginners, see [<u>a introduction to flashrag</u>](./docs/instruction_for_beginners_en.md) ([<u>中文版</u>](./docs/introduction_for_beginners_zh.md))
 
 [24/05/31] We supported Openai-series models as generator. 
 
@@ -97,60 +85,27 @@ conda install -c pytorch faiss-cpu=1.8.0
 conda install -c pytorch -c nvidia faiss-gpu=1.8.0
 ```
 
-Note: It is impossible to install the latest version of `faiss` on certain systems.
-
-From the official Faiss repository ([source](https://github.com/facebookresearch/faiss/blob/main/INSTALL.md)):
-
-> - The CPU-only faiss-cpu conda package is currently available on Linux (x86_64 and arm64), OSX (arm64 only), and Windows (x86_64)
-> - faiss-gpu, containing both CPU and GPU indices, is available on Linux (x86_64 only) for CUDA 11.4 and 12.1
 
 ## :rocket: Quick Start
 
 
 ### Toy Example
 
-For beginners, we provide a [<u>an introduction to flashrag</u>](./docs/introduction_for_beginners_en.md) ([<u>中文版</u>](./docs/introduction_for_beginners_zh.md) [<u>한국어</u>](./docs/introduction_for_beginners_kr.md)) to help you familiarize yourself with our toolkit. Alternatively, you can directly refer to the code below.
+For beginners, we provide a [<u>a introduction to flashrag</u>](./docs/instruction_for_beginners_en.md) ([<u>中文版</u>](./docs/introduction_for_beginners_zh.md)) to help you familiarize yourself with our toolkit. Alternatively, you can directly refer to the code below.
 
-#### Demo 
-
-We provide a toy demo to implement a simple RAG process. You can freely change the corpus and model you want to use. The English demo uses [general knowledge](https://huggingface.co/datasets/MuskumPillerum/General-Knowledge) as the corpus, `e5-base-v2` as the retriever, and `Llama3-8B-instruct` as generator. The Chinese demo uses data crawled from the official website of Remin University of China as the corpus, `bge-large-zh-v1.5` as the retriever, and qwen1.5-14B as the generator. Please fill in the corresponding path in the file.
-
-<div style="display: flex; justify-content: space-around;">
-  <div style="text-align: center;">
-    <img src="./asset/demo_en.gif" style="width: 100%;">
-  </div>
-</div>
-
-To run the demo:
-
-```bash
-cd examples/quick_start
-
-# copy the config file here, otherwise, streamlit will complain that file s
-cp ../methods/my_config.yaml .
-
-# run english demo
-streamlit run demo_en.py
-
-# run chinese demo
-streamlit run demo_zh.py
-```
-
-
-#### Pipeline
-
-We also provide an example to use our framework for pipeline execution.
 Run the following code to implement a naive RAG pipeline using provided toy datasets.
-The default retriever is `e5-base-v2` and default generator is `Llama3-8B-instruct`. You need to fill in the corresponding model path in the following command. If you wish to use other models, please refer to the detailed instructions below.
+The default retriever is `e5` and default generator is `llama2-7B-chat`. You need to fill in the corresponding model path in the following command. If you wish to use other models, please refer to the detailed instructions below.
 
 ```bash
 cd examples/quick_start
 python simple_pipeline.py \
-    --model_path <Llama-3-8B-instruct-PATH> \
-    --retriever_path <E5-PATH>
+    --model_path=<LLAMA2-7B-Chat-PATH> \
+    --retriever_path=<E5-PATH>
 ```
 
 After the code is completed, you can view the intermediate results of the run and the final evaluation score in the output folder under the corresponding path.
+
+**Note:** This toy example is just to help test whether the entire process can run normally. Our toy retrieval document only contains 1000 pieces of data, so it may not yield good results.
 
 ### Using the ready-made pipeline
 
@@ -275,7 +230,7 @@ In FlashRAG, we have built a series of common RAG components, including retrieve
       <td>Calculate matching score using cross-encoder</td>
     </tr>
     <tr>
-      <td rowspan="5">Refiner</td>
+      <td rowspan="4">Refiner</td>
       <td>Extractive Refiner</td>
       <td>Refine input by extracting important context</td>
     </tr>
@@ -291,9 +246,6 @@ In FlashRAG, we have built a series of common RAG components, including retrieve
       <td>SelectiveContext Refiner</td>
       <td><a href="https://arxiv.org/abs/2310.06201">Selective-Context</a> prompt compressor</td>
     </tr>
-    <tr>
-      <td> KG Refiner </td>
-      <td>Use <a hred='https://arxiv.org/abs/2406.11460'>Trace method to construct a knowledge graph</td>
     <tr>
       <td rowspan="4">Generator</td>
       <td>Encoder-Decoder Generator</td>
@@ -353,7 +305,7 @@ In each category, we have implemented corresponding common pipelines. Some pipel
           <td>Ranking and merging generated results based on each document</td>
         </tr>
         <tr>
-            <td rowspan="5">Loop</td>
+            <td rowspan="4">Loop</td>
             <td>Iterative Pipeline</td>
             <td>Alternating retrieval and generation</td>
         </tr>
@@ -369,17 +321,13 @@ In each category, we have implemented corresponding common pipelines. Some pipel
             <td>FLARE Pipeline</td>
             <td>Dynamic retrieval during the generation process</td>
         </tr>
-        <tr>
-            <td>IRCoT Pipeline</td>
-            <td>Integrate retrieval process with CoT</td>
-        </tr>
     </tbody>
 </table>
 
 
 ## :robot: Supporting Methods
 
-We have implemented 14 works with a consistent setting of:
+We have implemented 12 works with a consistent setting of:
 - **Generator:** LLAMA3-8B-instruct with input length of 2048
 - **Retriever:** e5-base-v2 as embedding model, retrieve 5 docs per query
 - **Prompt:** A consistent default prompt, template can be found in the [<u>method details</u>](./docs/baseline_details.md).
@@ -396,26 +344,25 @@ It’s important to note that, to ensure consistency, we have utilized a uniform
 | Naive Generation     | Sequential     | 22.6    | 55.7          | 28.4          |  33.9| 21.7| 18.8| |
 | Standard RAG         | Sequential     | 35.1    | 58.9          | 35.3          | 21.0 | 36.7|15.7| |
 | [AAR-contriever-kilt](https://aclanthology.org/2023.acl-long.136.pdf)  | Sequential     | 30.1    | 56.8          | 33.4          | 19.8 | 36.1  | 16.1| |
-| [LongLLMLingua](https://arxiv.org/abs/2310.06839)        | Sequential     | 32.2    | 59.2          | 37.5          |25.0| 38.7| 17.5| Compress Ratio=0.5 |
-| [RECOMP-abstractive](https://arxiv.org/pdf/2310.04408)   | Sequential     | 33.1    | 56.4          | 37.5          | 32.4 | 39.9| 20.2| |
+| [LongLLMLingua](https://aclanthology.org/2023.acl-long.136.pdf)        | Sequential     | 32.2    | 59.2          | 37.5          |25.0| 38.7| 17.5| Compress Ratio=0.5 |
+| [RECOMP-abstractive](https://aclanthology.org/2023.acl-long.136.pdf)   | Sequential     | 33.1    | 56.4          | 37.5          | 32.4 | 39.9| 20.2| |
 | [Selective-Context](https://arxiv.org/abs/2310.06201)    | Sequential     | 30.5    | 55.6          | 34.4          |18.5| 33.5| 17.3| Compress Ratio=0.5|
-| [Trace](https://arxiv.org/abs/2406.11460) | Sequential | 30.7 | 50.2 | 34.0 | 15.5 | 37.4 | 19.9 | |
-| [Spring](https://arxiv.org/abs/2405.19670) | Sequential | 37.9 | 64.6 |42.6 | 37.3 |54.8 |27.7 | Use Llama2-7B-chat with trained embedding table |
+| [Ret-Robust](https://arxiv.org/abs/2310.01558)           | Sequential     | 42.9    | 68.2          | 35.8          |43.4|57.2|33.7| Use LLAMA2-13B with trained lora|
 | [SuRe](https://arxiv.org/abs/2404.13081)                 | Branching      | 37.1    | 53.2          | 33.4          |20.6|48.1|24.2| Use provided prompt|
 | [REPLUG](https://arxiv.org/abs/2301.12652)               | Branching      | 28.9    | 57.7          | 31.2          |21.1|27.8|20.2|  |
 | [SKR](https://aclanthology.org/2023.findings-emnlp.691.pdf)                  | Conditional    | 33.2   | 56.0          | 32.4          | 23.4 |31.7|17.0|Use infernece-time training data|
-| [Ret-Robust](https://arxiv.org/abs/2310.01558)           | Loop     | 42.9    | 68.2          | 35.8          |43.4|57.2|33.7| Use LLAMA2-13B with trained lora|
 | [Self-RAG](https://arxiv.org/abs/2310.11511)             | Loop   | 36.4    | 38.2          | 29.6          | 25.1|32.7|21.9| Use trained selfrag-llama2-7B|
 | [FLARE](https://arxiv.org/abs/2305.06983)                | Loop   | 22.5    | 55.8          | 28.0          |33.9| 20.7| 20.2| |
 | [Iter-Retgen](https://arxiv.org/abs/2305.15294),      [ITRG](https://arxiv.org/abs/2310.05149)   | Loop | 36.8    | 60.1          | 38.3          | 21.6| 37.9| 18.2| |
-| [IRCoT](https://aclanthology.org/2023.acl-long.557.pdf) | Loop | 33.3| 56.9|41.5|32.4 |45.6 |20.7 | |
+
+
 
 
 ## :notebook: Supporting Datasets & Document Corpus
 
 ### Datasets
 
-We have collected and processed 35 datasets widely used in RAG research, pre-processing them to ensure a consistent format for ease of use. For certain datasets (such as Wiki-asp), we have adapted them to fit the requirements of RAG tasks according to the methods commonly used within the community. All datasets are available at [<u>Huggingface datasets</u>](https://huggingface.co/datasets/RUC-NLPIR/FlashRAG_datasets). 
+We have collected and processed 35 datasets widely used in RAG research, pre-processing them to ensure a consistent format for ease of use. For certain datasets (such as Wiki-asp), we have adapted them to fit the requirements of RAG tasks according to the methods commonly used within the community. All datasets are available at [<u>Huggingface datasets</u>](https://huggingface.co/datasets/ignore/FlashRAG_datasets). 
 
 For each dataset, we save each split as a `jsonl` file, and each line is a dict as follows:
 ```python

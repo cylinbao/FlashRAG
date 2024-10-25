@@ -1,27 +1,29 @@
 from transformers import AutoTokenizer, AutoConfig
 
-
 class PromptTemplate:
-    placeholders = ["reference", "question"]
-    base_system_prompt = (
-        "Answer the question based on the given document."
-        "Only give me the answer and do not output any other words."
-        "\nThe following are given documents.\n\n{reference}"
-    )
+    placeholders = ['reference', 'question']
+    base_system_prompt = "Answer the question based on the given document." \
+                        "Only give me the answer and do not output any other words." \
+                        "\nThe following are given documents.\n\n{reference}"
     base_user_prompt = "Question: {question}"
 
-    def __init__(self, config, system_prompt="", user_prompt="", reference_template=None, enable_chat=True):
+    def __init__(self,
+                config,
+                system_prompt = "",
+                user_prompt = "",
+                enable_chat = True,
+        ):
 
         self.config = config
-        self.is_openai = config["framework"] == "openai"
+        self.is_openai = config['framework'] == 'openai'
         if not self.is_openai:
-            self.generator_path = config["generator_model_path"]
-            model_config = AutoConfig.from_pretrained(self.generator_path, trust_remote_code=True)
+            self.generator_path = config['generator_model_path']
+            model_config = AutoConfig.from_pretrained(self.generator_path)
             model_name = model_config._name_or_path.lower()
             self.is_chat = False
-            if "chat" in model_name or "instruct" in model_name:
+            if 'chat' in model_name or 'instruct' in model_name:
                 self.is_chat = True
-                self.tokenizer = AutoTokenizer.from_pretrained(self.generator_path, trust_remote_code=True)
+                self.tokenizer = AutoTokenizer.from_pretrained(self.generator_path)
         else:
             self.is_chat = True
             self.enable_chat = True
@@ -32,31 +34,49 @@ class PromptTemplate:
         self.system_prompt = system_prompt
         self.user_prompt = user_prompt
         self.enable_chat = enable_chat
-        self.reference_template = reference_template
 
-        # self._check_placeholder()
+        self._check_placeholder()
 
     def _check_placeholder(self):
         # check placeholder in prompt
         for holder in self.placeholders:
             flag = False
             for prompt in [self.system_prompt, self.user_prompt]:
-                if f"{holder}" in prompt:
+                if f'{holder}' in prompt:
                     print(f"Find `{holder}` in template")
                     flag = True
                     break
-            if not flag and holder != "reference":
+            if not flag and holder != 'reference':
                 assert False
 
-    def get_string(self, question, retrieval_result=None, formatted_reference=None, previous_gen=None, **params):
+    def get_string(self,
+                   question,
+                   retrieval_result = None,
+                   formatted_reference = None,
+                   previous_gen = None,
+                   tools = None,
+                   **params
+        ):
 
         if formatted_reference is None:
             if retrieval_result is not None:
                 formatted_reference = self.format_reference(retrieval_result)
             else:
-                formatted_reference = ""
+                formatted_reference = "None"
 
-        input_params = {"question": question, "reference": formatted_reference}
+        if previous_gen is None:
+            # formatted_previous_gen = None
+            # formatted_previous_gen = "None"
+            formatted_previous_gen = ""
+        else:
+            formatted_previous_gen = previous_gen
+
+        input_params = {
+            "question": question,
+            "reference": formatted_reference,
+            "previous_gen": formatted_previous_gen,
+            "tools": tools,
+        }
         input_params.update(**params)
 
         system_prompt = self.system_prompt.format(**input_params)
@@ -65,82 +85,196 @@ class PromptTemplate:
         if self.is_chat and self.enable_chat:
             input = []
             if system_prompt != "":
-                input.append({"role": "system", "content": system_prompt})
+                input.append({"role":"system", "content": system_prompt})
             if user_prompt != "":
-                input.append({"role": "user", "content": user_prompt})
+                input.append({"role":"user", "content": user_prompt})
             if self.is_openai:
                 for item in input:
-                    if item["role"] == "system":
-                        item["role"] == "assistant"
+                    if item['role'] == 'system':
+                        item['role'] == 'assistant'
             else:
                 input = self.tokenizer.apply_chat_template(input, tokenize=False, add_generation_prompt=True)
         else:
             input = "\n\n".join([prompt for prompt in [system_prompt, user_prompt] if prompt != ""])
 
-        if previous_gen is not None and previous_gen not in ["", " "] and self.is_openai is False:
+        if previous_gen is not None and self.is_openai is False:
             input += previous_gen
 
         return input
 
-    def get_string_with_varying_examplars(
-        self,
-        question,
-        retrieval_result=None,
-        formatted_reference=None,
-        previous_gen=None,
-        examplars=[],
-        tokenizer=None,
-        max_length=2048,
-        **params,
-    ):
-        """
-        Select the maximum number of examplars that can be placed in the prompt
-        """
-
-        final_examplars = None
-        num = len(examplars)
-        while len(examplars) > 0:
-            for num in range(len(examplars), 0, -1):
-                possible_prompt = self.get_string(
-                    question=question,
-                    retrieval_result=retrieval_result,
-                    formatted_reference=formatted_reference,
-                    previous_gen=previous_gen,
-                    examplars="\n\n".join(examplars[:num]),
-                    **params,
-                )
-
-                possible_prompt_tokens = tokenizer.encode(possible_prompt)
-                if len(possible_prompt_tokens) <= max_length:
-                    final_examplars = examplars[:num]
-                    break
-            if final_examplars is None:
-                examplars = examplars[1:]
-            else:
-                break
-        if final_examplars is None:
-            final_examplars = []
-
-        final_prompt = self.get_string(
-            question=question,
-            retrieval_result=retrieval_result,
-            formatted_reference=formatted_reference,
-            previous_gen=previous_gen,
-            examplars="\n\n".join(final_examplars[:num]),
-            **params,
-        )
-
-        return final_prompt
 
     def format_reference(self, retrieval_result):
-        format_reference = ""
+        format_reference = ''
         for idx, doc_item in enumerate(retrieval_result):
-            content = doc_item["contents"]
-            title = content.split("\n")[0]
-            text = "\n".join(content.split("\n")[1:])
-            if self.reference_template is not None:
-                format_reference += self.reference_template.format(idx=idx, title=title, text=text)
+            content = doc_item['contents']
+            if "title" in doc_item.keys():
+                title = doc_item['title']
+                text = content
             else:
-                format_reference += f"Doc {idx+1}(Title: {title}) {text}\n"
+                title = content.split("\n")[0]
+                text = "\n".join(content.split("\n")[1:])
+            format_reference += f"Doc {idx+1} (Title: {title}) {text}\n"
 
         return format_reference
+
+DEFAULT_STEP_DECOMPOSE_QUERY_TRANSFORM_TMPL = (
+    "The original question is as follows: {question}\n"
+    "We have an opportunity to answer some, or all of the question from a "
+    "knowledge source. "
+    "Context information for the knowledge source is provided below, as "
+    "well as previous reasoning steps.\n"
+    "Given the context and previous reasoning, return a question that can "
+    "be answered from "
+    "the context. This question can be the same as the original question, "
+    "or this question can represent a subcomponent of the overall question."
+    "It should not be irrelevant to the original question.\n"
+    "If we cannot extract more information from the context, provide 'None' "
+    "as the answer. "
+    "Some examples are given below: "
+    "\n\n"
+    "Question: How many Grand Slam titles does the winner of the 2020 Australian "
+    "Open have?\n"
+    "Knowledge source context: Provides names of the winners of the 2020 "
+    "Australian Open\n"
+    "Previous reasoning: None\n"
+    "Next question: Who was the winner of the 2020 Australian Open? "
+    "\n\n"
+    "Question: Who was the winner of the 2020 Australian Open?\n"
+    "Knowledge source context: Provides names of the winners of the 2020 "
+    "Australian Open\n"
+    "Previous reasoning: None.\n"
+    "New question: Who was the winner of the 2020 Australian Open? "
+    "\n\n"
+    "Question: How many Grand Slam titles does the winner of the 2020 Australian "
+    "Open have?\n"
+    "Knowledge source context: Provides information about the winners of the 2020 "
+    "Australian Open\n"
+    "Previous reasoning:\n"
+    "- Who was the winner of the 2020 Australian Open? \n"
+    "- The winner of the 2020 Australian Open was Novak Djokovic.\n"
+    "New question: None"
+    "\n\n"
+    "Question: How many Grand Slam titles does the winner of the 2020 Australian "
+    "Open have?\n"
+    "Knowledge source context: Provides information about the winners of the 2020 "
+    "Australian Open - includes biographical information for each winner\n"
+    "Previous reasoning:\n"
+    "- Who was the winner of the 2020 Australian Open? \n"
+    "- The winner of the 2020 Australian Open was Novak Djokovic.\n"
+    "New question: How many Grand Slam titles does Novak Djokovic have? "
+    "\n\n"
+    "Question: {question}\n"
+    "Knowledge source context: Provide millions of articles from Wikipedia, \n"
+    "which is a general source of human knowledge \n"
+    "Previous reasoning: {previous_gen}\n"
+    "New question: "
+)
+
+DEFAULT_JUDGE_TMPL = (
+    "The original question is as follows: {question}\n"
+    "And we have an following answer: {answer_str}\n"
+    "Please judge the answer is correct or not.\n"
+    "If the answer is correct, please return '1', otherwise, please return '0'.\n"
+    "Your judgement:"
+)
+
+DEFAULT_TREE_SUMMARIZE_TMPL = (
+    "Context information from multiple sources is below.\n"
+    "---------------------\n"
+    "{reference}\n"
+    "---------------------\n"
+    "Given the information from multiple sources and not prior knowledge, "
+    "Answer the query and do not output any other words.\n"
+    "Query: {question}\n"
+    "Answer: "
+)
+
+DEFAULT_SUBQUESTION_SYSTEM_TMPL = """\
+Given a user question, output a list of relevant sub-questions \
+that when composed can help answer the full user question. \
+Please output in a format of Python List and split each question with "," \
+
+## User Question
+{question}
+"""
+
+DEFAULT_OPENAI_SUB_QUESTION_PROMPT_TMPL = """\
+You are a world class state of the art agent.
+
+You have access to multiple tools, each representing a different data source or API.
+Each of the tools has a name and a description, formatted as a JSON dictionary.
+The keys of the dictionary are the names of the tools and the values are the \
+descriptions.
+Your purpose is to help answer a complex user question by generating a list of sub \
+questions that can be answered by the tools.
+
+These are the guidelines you consider when completing your task:
+* Be as specific as possible
+* The sub questions should be relevant to the user question
+* The sub questions should be answerable by the tools provided
+* You can generate multiple sub questions for each tool
+* Tools must be specified by their name, not their description
+* You don't need to use a tool if you don't think it's relevant
+
+Output the list of sub questions by calling the SubQuestionList function.
+
+## Tools
+```json
+{tools}
+```
+
+## User Question
+{question}
+"""
+
+DEFAULT_OPENAI_SUB_QUESTION_PROMPT_TMPL2 = """\
+Given a user question, and a list of tools, output a list of relevant sub-questions \
+in json markdown that when composed can help answer the full user question:
+
+You are a world class state of the art agent.
+
+You have access to multiple tools, each representing a different data source or API.
+Each of the tools has a name and a description, formatted as a JSON dictionary.
+The keys of the dictionary are the names of the tools and the values are the \
+descriptions.
+Your purpose is to help answer a complex user question by generating a list of sub \
+questions that can be answered by the tools.
+
+These are the guidelines you consider when completing your task:
+* Be as specific as possible
+* The sub questions should be relevant to the user question
+* The sub questions should be answerable by the tools provided
+* You can generate multiple sub questions for each tool
+* Tools must be specified by their name, not their description
+* You don't need to use a tool if you don't think it's relevant
+
+Output the list of sub questions by calling the SubQuestionList function.
+
+## Tools
+```json
+{tools}
+```
+
+## User Question
+{question}
+"""
+
+FLARE_PROMPT_TEMPLATE = """\
+Respond to the user message using any relevant context. \
+If context is provided, you should ground your answer in that context. \
+Only give me the answer and do not output any other words.
+Once you're done responding return FINISHED.
+
+>>> CONTEXT: {reference}
+>>> USER INPUT: {question}
+>>> RESPONSE: {previous_gen}
+"""
+
+FLARE_QUESTION_GENERATOR_PROMPT_TEMPLATE = """\
+Given a user input and an existing partial response as context, \
+ask a question to which the answer is the given term/entity/phrase:
+
+>>> USER INPUT: {question}
+>>> EXISTING PARTIAL RESPONSE: {previous_gen}
+
+The question to which the answer is the term/entity/phrase "{uncertain_span}" is:"""

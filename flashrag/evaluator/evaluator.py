@@ -1,17 +1,16 @@
 import os
 from flashrag.evaluator.metrics import BaseMetric
 
-
 class Evaluator:
     """Evaluator is used to summarize the results of all metrics."""
 
     def __init__(self, config):
         self.config = config
-        self.save_dir = config["save_dir"]
+        self.save_dir = config['save_dir']
 
-        self.save_metric_flag = config["save_metric_score"]
-        self.save_data_flag = config["save_intermediate_data"]
-        self.metrics = [metric.lower() for metric in self.config["metrics"]]
+        self.save_metric_flag = config['save_metric_score']
+        self.save_data_flag = config['save_intermediate_data']
+        self.metrics = [metric.lower() for metric in self.config['metrics']]
 
         self.avaliable_metrics = self._collect_metrics()
 
@@ -52,10 +51,10 @@ class Evaluator:
                 metric_result, metric_scores = self.metric_class[metric].calculate_metric(data)
                 result_dict.update(metric_result)
 
-                for metric_score, item in zip(metric_scores, data):
-                    item.update_evaluation_score(metric, metric_score)
+                # for metric_score, item in zip(metric_scores, data):
+                #     item.update_evaluation_score(metric, metric_score)
             except Exception as e:
-                print(f"Error in {metric}!")
+                print(f'Error in {metric}!')
                 print(e)
                 continue
 
@@ -67,16 +66,53 @@ class Evaluator:
 
         return result_dict
 
-    def save_metric_score(self, result_dict, file_name="metric_score.txt"):
-        save_path = os.path.join(self.save_dir, file_name)
-        with open(save_path, "w", encoding="utf-8") as f:
-            for k, v in result_dict.items():
+    def evaluate2(self, data, golden_answers):
+        """Calculate all metric indicators and summarize them."""
+
+        result_dict = {}
+
+        for metric in self.metrics:
+            try:
+                if metric == "sub_em":
+                    metric_result, metric_scores = self.metric_class[metric].calculate_metric2(data, golden_answers)
+                else:
+                    metric_result, metric_scores = self.metric_class[metric].calculate_metric(data)
+
+                result_dict.update(metric_result)
+
+                # for metric_score, item in zip(metric_scores, data):
+                #     item.update_evaluation_score(metric, metric_score)
+            except Exception as e:
+                print(f'Error in {metric}!')
+                print(e)
+                continue
+
+        if self.save_metric_flag:
+            self.save_metric_score(result_dict)
+
+        if self.save_data_flag:
+            self.save_data(data)
+
+        return result_dict
+
+    def save_metric_score(self, result_dict):
+        file_name = "metric_score.txt"
+        # save_path = os.path.join(self.save_dir, file_name)
+        save_path = os.path.join(self.config["save_dir"], file_name)
+
+        with open(save_path, "w", encoding='utf-8') as f:
+            for k,v in result_dict.items():
                 f.write(f"{k}: {v}\n")
 
-    def save_data(self, data, file_name="intermediate_data.json"):
-        """Save the evaluated data, including the raw data and the score of each data
+
+    def save_data(self, data):
+        """Save the evaluated data, including the raw data and the score of each data 
         sample on each metric."""
 
-        save_path = os.path.join(self.save_dir, file_name)
+        # file_name = "intermediate_data.json"
+        # save_path = os.path.join(self.save_dir, file_name)
+
+        file_name = f"{self.config['generator_model']}_{self.config['dataset_name']}_{self.config['save_note']}_sample_{self.config['test_sample_num']}.jsonl"
+        save_path = os.path.join(self.config["log_dir"], file_name)
 
         data.save(save_path)

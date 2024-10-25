@@ -1,7 +1,6 @@
 cohere
 datasets>=2.14.6
 fschat
-base58
 nltk
 numpy
 openai
@@ -18,5 +17,3 @@ tqdm
 transformers>=4.40.0
 vllm>=0.4.1
 voyageai
-sentence-transformers>=3.0.1
-streamlit
