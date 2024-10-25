@@ -72,6 +72,11 @@ def get_retriever(config):
             importlib.import_module("flashrag.retriever"),
             "BM25Retriever"
         )(config)
+    elif config['retrieval_method'] == "ragacc":
+        return getattr(
+            importlib.import_module("flashrag.retriever"),
+            "RAGAccRetriever"
+        )(config)
     else:
         return getattr(
             importlib.import_module("flashrag.retriever"),
