@@ -119,6 +119,7 @@ class Config:
         self.final_config['dataset_path'] = os.path.join(data_dir, dataset_name)
 
         # set model path
+        # index_type = self.final_config['index_type']
         retrieval_method = self.final_config['retrieval_method']
         model2path = self.final_config['model2path']
         model2pooling = self.final_config['model2pooling']
@@ -182,9 +183,9 @@ class Config:
         #                              # f"{self.final_config['generator_moder']}_{self.final_config['dataset_name']}_{save_note}.jsonl")
         self.final_config['save_dir'] = os.path.join(self.final_config['save_dir'], self.final_config["method_name"],
                                         f"{self.final_config['dataset_name']}_{save_note}_{current_time.strftime('%Y_%m_%d_%H_%M')}")
-        self.final_config['log_dir'] = os.path.join(self.final_config['log_dir'], self.final_config["method_name"])
-        # self.final_config['log_dir'] = os.path.join(self.final_config['log_dir'], self.final_config["method_name"],
-        #                                 f"{self.final_config['dataset_name']}_{save_note}_{current_time.strftime('%Y_%m_%d_%H_%M')}")
+        # self.final_config['log_dir'] = os.path.join(self.final_config['log_dir'], self.final_config["method_name"])
+        self.final_config['log_dir'] = os.path.join(self.final_config['log_dir'], self.final_config["method_name"],
+                                        f"{self.final_config['dataset_name']}_{save_note}_{current_time.strftime('%Y_%m_%d_%H_%M')}")
         os.makedirs(self.final_config['save_dir'], exist_ok=True)
         os.makedirs(self.final_config['log_dir'], exist_ok=True)
         # save config parameters

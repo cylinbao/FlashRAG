@@ -7,6 +7,7 @@ from tqdm import tqdm
 import faiss
 import numpy as np
 import time
+import torch
 # from pyserini.search.lucene import LuceneSearcher
 
 from flashrag.utils import get_reranker
@@ -329,6 +330,9 @@ class RAGAccRetriever(BaseRetriever):
         super().__init__(config)
         self.nprobe = config['retrieval_nprobe']
 
+        self.device = torch.device(f"cuda:{config['gpu_id']}")
+        print("RAGAccRetriever uses device:", self.device)
+
         # this process is specific to current index path
         self.index_key = self.index_path.split('/')[-1]
         self.index_dir = self.index_path.split(self.index_key)[0]
@@ -350,7 +354,7 @@ class RAGAccRetriever(BaseRetriever):
                         for key, value in arg_dict.items() if value]
         ragacc_args = parser.parse_args(arg_list)
 
-        # self.index = faiss.read_index(self.index_path)
+        # self.index_faiss = faiss.read_index(self.index_path)
         self.index = RAGAccIndex(ragacc_args)
 
         self.corpus = load_corpus(self.corpus_path)
@@ -364,24 +368,33 @@ class RAGAccRetriever(BaseRetriever):
         self.topk = config['retrieval_topk']
         self.batch_size = self.config['retrieval_batch_size']
 
-    # TODO: implement the prefetch method 
-    def _prefetch(self, query: str):
+    def _prefetch(self, query: str, nprobe: int = None):
+        query_emb = self.encoder.encode(query)
+        query_emb = torch.from_numpy(query_emb).to(self.index.device)
+
+        if nprobe == None:
+            nprobe = self.nprobe
+        self.index.prefetch(query_emb, nprobe)
+        torch.cuda.synchronize()
         return
 
-    # TODO: implement the search method
     def _search(self, query: str, num: int = None, return_score = False, nprobe: int = None):
-        if num is None:
-            num = self.topk
         query_emb = self.encoder.encode(query)
 
-        if nprobe != None:
-            faiss.downcast_index(self.index).nprobe = nprobe
+        if nprobe == None:
+            nprobe = self.nprobe
+        if num == None:
+            num = self.topk
 
-        scores, idxs = self.index.search(query_emb, k=num)
-        idxs = idxs[0]
-        scores = scores[0]
-        idxs = idxs.tolist()
-        scores = scores.tolist()
+        # test using prefetch
+        # self._prefetch(query, nprobe)
+
+        # when using faiss index to search
+        # faiss.downcast_index(self.index).nprobe = nprobe
+        # scores_faiss, idxs_faiss = self.index_faiss.search(query_emb, k=num)
+
+        query_emb = torch.from_numpy(query_emb).to(self.index.device)
+        scores, idxs = self.index.search(query_emb, topk=num, nprobe=nprobe)
 
         results = load_docs(self.corpus, idxs)
         if return_score:
@@ -389,48 +402,21 @@ class RAGAccRetriever(BaseRetriever):
         else:
             return results
 
-    # TODO: implement the search method
     def _batch_search(self, query_list: List[str], num: int = None, return_score = False, nprobe: int = None):
         if isinstance(query_list, str):
             query_list = [query_list]
         if num is None:
             num = self.topk
 
-        if nprobe != None:
-            faiss.downcast_index(self.index).nprobe = nprobe
-        
-        batch_size = self.batch_size
-
-        results = []
         scores = []
-        elap_t = []
-        for start_idx in tqdm(range(0, len(query_list), batch_size), desc='Retrieval process: '):
-            query_batch = query_list[start_idx:start_idx + batch_size]
-            clock_0 = time.time()
-            batch_emb = self.encoder.encode(query_batch)
-            clock_1 = time.time()
-            batch_scores, batch_idxs = self.index.search(batch_emb, k=num)
-            clock_2 = time.time()
-            batch_scores = batch_scores.tolist()
-            batch_idxs = batch_idxs.tolist()
+        results = []
+        for idx in tqdm(range(0, len(query_list)), desc='Retrieval process: '):
+            _results, _scores = self._search(query_list[idx], num=num, return_score=True, nprobe=nprobe)
 
-            flat_idxs = sum(batch_idxs, [])
-            batch_results = load_docs(self.corpus, flat_idxs)
-            batch_results = [batch_results[i*num : (i+1)*num] for i in range(len(batch_idxs))]
+            results.append(_results)
+            scores.append(_scores)
 
-            scores.extend(batch_scores)
-            results.extend(batch_results)
-            elap_t.append([clock_1 - clock_0, clock_2 - clock_1])
-
-        elap_t = np.array(elap_t)
-        # discard the first three runs
-        if elap_t.shape[0] > 3:
-            elap_t = elap_t[3:,:]
-        elap_t = np.mean(elap_t, axis=0)
-        self.retrieval_t.append({'emb': elap_t[0], 'retrieve': elap_t[1]})
-        
         if return_score:
             return results, scores
         else:
             return results
-
