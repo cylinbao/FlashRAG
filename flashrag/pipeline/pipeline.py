@@ -254,6 +254,8 @@ class HyDEPipeline(BasicPipeline):
         self.avg_ret_t = None
         self.verbose = verbose
 
+        self.use_cluster_prefetch = config['use_cluster_prefetch']
+
         # TODO: add rewriter module
         self.use_fid = config['use_fid']
         self.batch_size = config['retrieval_batch_size']
@@ -274,8 +276,20 @@ class HyDEPipeline(BasicPipeline):
             user_prompt = """Question: {question} \n\n
                              Passage: """
         )
+    
+    def retrieval_with_prefetch(self, prefetch_query, retrieval_query):
+        assert self.retriever.retrieval_backend == "ragacc"
+        self.retriever._clear_prefetch()
 
-    def query_transform(self, dataset, do_eval=True, pred_process_fun=None):
+        results = []
+        for p_q, r_q in zip(prefetch_query, retrieval_query):
+            self.retriever._prefetch(p_q)
+            retrieval = self.retriever.search(r_q)
+            results.append(retrieval)
+            self.retriever._clear_prefetch()
+        return results
+
+    def query_transform(self, dataset):
         # direct generation without RAG
         input_prompts = [self.hyde_template.get_string(question=q) for q in dataset.question]
         dataset.update_output('hyde_prompt', input_prompts)
@@ -286,13 +300,17 @@ class HyDEPipeline(BasicPipeline):
         return dataset
 
     def run(self, dataset, do_eval=True, pred_process_fun=None, batch_size=None):
-        # input_query = dataset.question
-
+        ori_query = dataset.question
         dataset = self.query_transform(dataset)
 
         input_query = dataset.hyde_gen_query
 
-        retrieval_results = self.retriever.batch_search(input_query)
+        if self.use_cluster_prefetch:
+            print("Use cluster prefetch")
+            retrieval_results = self.retrieval_with_prefetch(ori_query, input_query)
+        else:
+            print("Use retrieval without cluster prefetch")
+            retrieval_results = self.retriever.batch_search(input_query)
         dataset.update_output('retrieval_query', input_query)
         dataset.update_output('retrieval_result', retrieval_results)
 

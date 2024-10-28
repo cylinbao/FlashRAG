@@ -235,6 +235,7 @@ class DenseRetriever(BaseRetriever):
         super().__init__(config)
         self.index = faiss.read_index(self.index_path)
         self.nprobe = config['retrieval_nprobe']
+        self.retrieval_backend = "faiss" 
         if config['faiss_gpu']:
             # gpu_id = int(config['faiss_gpu_id'])
             # gpu_id = 0
@@ -328,10 +329,13 @@ class RAGAccRetriever(BaseRetriever):
 
     def __init__(self, config: dict):
         super().__init__(config)
+        self.retrieval_backend = "ragacc" 
         self.nprobe = config['retrieval_nprobe']
+        self.topk = config['retrieval_topk']
+        self.batch_size = self.config['retrieval_batch_size']
+        self.prefetch_only_retrieval = config['prefetch_only_retrieval']
 
         self.device = torch.device(f"cuda:{config['gpu_id']}")
-        print("RAGAccRetriever uses device:", self.device)
 
         # this process is specific to current index path
         self.index_key = self.index_path.split('/')[-1]
@@ -348,6 +352,8 @@ class RAGAccRetriever(BaseRetriever):
             "index-load-dir": self.index_dir,
             'index-type': 'ragacc',
             'nprobe': self.nprobe,
+            'gpu-only-search': config['prefetch_only_retrieval'],
+            'vm-size': config['prefetch_vm_size'],
         }
 
         arg_list = [f'--{key}={value}' if not isinstance(value, bool) else f'--{key}'
@@ -365,8 +371,9 @@ class RAGAccRetriever(BaseRetriever):
              max_length = config['retrieval_query_max_length'],
              use_fp16 = config['retrieval_use_fp16']
             )
-        self.topk = config['retrieval_topk']
-        self.batch_size = self.config['retrieval_batch_size']
+    
+    def _clear_prefetch(self):
+        self.index.clear_prefetch_data()
 
     def _prefetch(self, query: str, nprobe: int = None):
         query_emb = self.encoder.encode(query)
