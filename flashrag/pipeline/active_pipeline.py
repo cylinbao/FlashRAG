@@ -247,10 +247,8 @@ class SelfRAGPipeline(BasicPipeline):
 
         if self.mode == "always_retrieve":
             retrieval_flags = [True] * len(input_prompts)
-
         elif self.mode == "no_retrieval":
             retrieval_flags = [False] * len(input_prompts)
-
         else:
             retrieval_flags = []
             for idx, single_pred in enumerate(preds):
@@ -268,7 +266,10 @@ class SelfRAGPipeline(BasicPipeline):
 
                 retrieval_flags.append(do_retrieve)
 
-        return retrieval_flags
+        if len(all_pred_text) != 0:
+            return retrieval_flags, all_pred_text
+        else:
+            return retrieval_flags
 
     def critic_preds(self, preds):
         """Evaluate predictions using different retrieval docs"""
@@ -630,7 +631,11 @@ class SelfRAGPipeline(BasicPipeline):
         dataset.update_output('retrieval_judge_prompt', input_prompts)
 
         # determine whether to retrieve
-        retrieval_flags = self.judge_retrieve(input_prompts)
+        if self.mode != "always_retrieve":
+            retrieval_flags, pred_text  = self.judge_retrieve(input_prompts)
+            dataset.update_output('judge_pred_txt', pred_text)
+        else:
+            retrieval_flags = self.judge_retrieve(input_prompts)
         dataset.update_output('retrieval_flag', retrieval_flags)
         dataset.update_output('retrieval_result', retrieval_results)
 
