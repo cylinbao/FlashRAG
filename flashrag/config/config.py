@@ -181,11 +181,31 @@ class Config:
         #                              f"{self.final_config['dataset_name']}_{current_time.strftime('%Y_%m_%d_%H_%M')}_{save_note}")
         # self.final_config['log_dir'] = os.path.join(self.final_config['log_dir'], self.final_config["method_name"])
         #                              # f"{self.final_config['generator_moder']}_{self.final_config['dataset_name']}_{save_note}.jsonl")
-        self.final_config['save_dir'] = os.path.join(self.final_config['save_dir'], self.final_config["method_name"],
-                                        f"{self.final_config['dataset_name']}_{save_note}_{current_time.strftime('%Y_%m_%d_%H_%M')}")
-        # self.final_config['log_dir'] = os.path.join(self.final_config['log_dir'], self.final_config["method_name"])
-        self.final_config['log_dir'] = os.path.join(self.final_config['log_dir'], self.final_config["method_name"],
-                                        f"{self.final_config['dataset_name']}_{save_note}_{current_time.strftime('%Y_%m_%d_%H_%M')}")
+
+        # dir_name = f"{self.final_config['generator_model']}_{self.final_config['dataset_name']}_{save_note}_{current_time.strftime('%Y_%m_%d_%H_%M')}"
+        # self.final_config['save_dir'] = os.path.join(
+        #     self.final_config['save_dir'], self.final_config["method_name"], dir_name
+        # )
+        # self.final_config['log_dir'] = os.path.join(
+        #     self.final_config['log_dir'], self.final_config["method_name"], dir_name
+        # )
+
+        # dir_name = f"{self.final_config['dataset_name']}_{save_note}_{current_time.strftime('%Y_%m_%d_%H_%M')}"
+        # self.final_config['save_dir'] = os.path.join(
+        #     self.final_config['save_dir'], self.final_config["method_name"], self.final_config['generator_model'], dir_name
+        # )
+        # self.final_config['log_dir'] = os.path.join(
+        #     self.final_config['log_dir'], self.final_config["method_name"], self.final_config['generator_model'], dir_name
+        # )
+
+        dir_name = f"{self.final_config['generator_model']}_{self.final_config['dataset_name']}_{save_note}_{self.final_config['test_sample_num']}"
+        self.final_config['save_dir'] = os.path.join(
+            self.final_config['save_dir'], self.final_config["method_name"], dir_name,
+        )
+        self.final_config['log_dir'] = os.path.join(
+            self.final_config['log_dir'], self.final_config["method_name"]
+        )
+
         os.makedirs(self.final_config['save_dir'], exist_ok=True)
         os.makedirs(self.final_config['log_dir'], exist_ok=True)
         # save config parameters
